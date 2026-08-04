@@ -1,0 +1,9 @@
+# 经过本项目离线校验的固定版本；升级时请同步运行 unit_tests 和 E2E 冒烟。
+playwright==1.60.0
+pytest==9.1.1
+pytest-playwright==0.8.0
+allure-pytest==2.16.0
+pandas==3.0.3
+openpyxl==3.1.5
+python-dotenv==1.2.2
+pytest-timeout==2.4.0
