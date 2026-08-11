@@ -35,7 +35,14 @@ def _load_test_cases() -> list[dict]:
             handler = ExcelHandler(str(path))
             fmt = handler.detect_format()
             logger.info(f"已加载: {fname} (格式: {fmt})")
-            return handler.read_test_cases()
+            cases = handler.read_test_cases()
+            # 【修复】按「是否执行」过滤：标「否」的用例不运行
+            skipped = [c.get("用例ID", c.get("编号", "")) for c in cases
+                       if str(c.get("是否执行", "是")).strip() in ("否", "N", "n")]
+            if skipped:
+                logger.info(f"已跳过 {len(skipped)} 条未执行用例: {skipped}")
+            return [c for c in cases
+                    if str(c.get("是否执行", "是")).strip() not in ("否", "N", "n")]
     raise FileNotFoundError("test_cases/ 目录下没有可用的 Excel 文件")
 
 ALL_TEST_CASES = _load_test_cases()
@@ -88,7 +95,7 @@ class TestCoreCases:
         test_password,
     ):
         if IS_NEW_FORMAT:
-            self._execute_new(test_case, page, login_page, test_username, test_password)
+            self._execute_new(test_case, page, login_page, test_username, test_password, base_url)
         else:
             self._execute_old(
                 test_case, page, login_page, home_page, case_list_page,
@@ -99,7 +106,7 @@ class TestCoreCases:
     # ==================== 新版：Excel 规范直接驱动 ====================
 
     @allure.step("新版关键字驱动执行")
-    def _execute_new(self, test_case, page, login_page, test_username, test_password):
+    def _execute_new(self, test_case, page, login_page, test_username, test_password, base_url):
         case_id = test_case.get("用例ID", "")
         module = test_case.get("模块", "")
         scenario = test_case.get("测试场景", "")
@@ -133,7 +140,7 @@ class TestCoreCases:
         self._handle_preconditions(preconditions, page, login_page, test_username, test_password)
 
         # 执行操作步骤
-        executor = StepExecutor(page)
+        executor = StepExecutor(page, base_url)
         executor.execute(locators_str, operations_str, data_str)
 
         # 执行断言
@@ -142,7 +149,9 @@ class TestCoreCases:
         last_locator = locator_list[-1] if locator_list else ""
         # 等待页面稳定后再断言（Toast 消息需要时间渲染）
         page.wait_for_timeout(2000)
-        assertion = AssertionExecutor(page)
+        # 【修复】断言必须用执行器当前的页面句柄：switch_tab 切换新标签页后，
+        # 原始 page 还在旧页面上，断言会读到错误 URL/内容
+        assertion = AssertionExecutor(executor.get_current_page())
         assertion.assert_by_type(assert_type, verify_point or expected, last_locator)
 
         logger.info(f"[{case_id}] ✅ 完成")
@@ -156,16 +165,28 @@ class TestCoreCases:
             login_page.open()
             login_page.login(test_username, test_password, select_store=True)
             login_page.assert_login_success()
-            # 【健壮性】「知道了」按钮可能出现延迟，重试 2 次确保点击成功
-            for _ in range(2):
-                try:
-                    page.get_by_text("知道了").click()
-                    page.wait_for_timeout(1000)
-                    break
-                except Exception:
-                    page.wait_for_timeout(500)
+            # 【健壮性】「知道了」弹窗存在才点击；不存在直接跳过（避免 30s 超时等待）
+            self._dismiss_modal_if_present(page)
         elif "打开登录" in pc or "未登录" in pc:
             login_page.open()
+
+    @staticmethod
+    def _dismiss_modal_if_present(page) -> None:
+        """
+        关闭登录后可能出现的「知道了」弹窗（存在才点，不存在立即返回）。
+
+        不能用 get_by_text().click() 盲点：弹窗不存在时每次点击都要等满
+        Playwright 默认 30s 动作超时（重试两次浪费约 60s）。先做低成本
+        的存在性检查，弹窗不存在时整个流程只耗时毫秒级。
+        """
+        try:
+            btn = page.get_by_text("知道了")
+            if btn.count() > 0 and btn.first.is_visible(timeout=2000):
+                btn.first.click(timeout=3000)
+                page.wait_for_timeout(1000)
+                logger.info("已关闭「知道了」弹窗")
+        except Exception:
+            page.wait_for_timeout(500)
 
     # ==================== 旧版：路由兼容 ====================
 
@@ -235,14 +256,8 @@ class TestCoreCases:
         login_page.login(username, password, select_store=True)
         login_page.assert_login_success()
         if page:
-            # 【健壮性】「知道了」按钮可能出现延迟，重试 2 次确保点击成功
-            for _ in range(2):
-                try:
-                    page.get_by_text("知道了").click()
-                    page.wait_for_timeout(1000)
-                    break
-                except Exception:
-                    page.wait_for_timeout(500)
+            # 【健壮性】「知道了」弹窗存在才点击；不存在直接跳过（避免 30s 超时等待）
+            self._dismiss_modal_if_present(page)
         logger.info("✅ 已登录")
 
     @allure.step("登录模块旧版测试: {feature}")

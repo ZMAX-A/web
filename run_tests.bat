@@ -21,11 +21,15 @@ if errorlevel 1 (
 )
 
 echo Checking Playwright Chromium...
-call .venv\Scripts\python.exe -m playwright install chromium
-if errorlevel 1 (
-    echo Chromium installation failed. Run install_playwright.bat for mirror options.
-    pause
-    exit /b 1
+if not exist "%LOCALAPPDATA%\ms-playwright\chromium-1223" (
+    call .venv\Scripts\python.exe -m playwright install chromium
+    if errorlevel 1 (
+        echo Chromium installation failed. Run install_playwright.bat for mirror options.
+        pause
+        exit /b 1
+    )
+) else (
+    echo Chromium already installed, skip.
 )
 
 if not exist ".env" (
@@ -62,9 +66,11 @@ if %EXIT_CODE% equ 0 (
 
 echo.
 echo Generating Allure report...
-allure generate reports/allure-results -o reports/allure-report --clean >nul 2>&1
+allure generate reports/allure-results -o reports/allure-report --clean
 if %errorlevel% equ 0 (
     echo Allure report generated: reports/allure-report
+    echo Archiving this report to reports\history\...
+    call .venv\Scripts\python.exe utils\archive_report.py
     start http://localhost:8899
     start /b .venv\Scripts\python.exe -m http.server 8899 -d reports\allure-report
     echo Report server started: http://localhost:8899

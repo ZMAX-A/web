@@ -6,6 +6,7 @@ env/
 # Allure 测试报告
 reports/allure-results/
 reports/allure-report/
+reports/history/
 
 # 测试截图
 screenshots/

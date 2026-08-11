@@ -56,17 +56,18 @@ tr:hover td {{ background: #fafafa; }}
 
 
 def main():
-    # 1. 看有没有已生成的 index.html
-    if (REPORT_DIR / "index.html").exists():
-        print("✅ 找到已有报告")
+    # 标准 Allure 报告存在时（allure generate 生成，含 widgets/ 结构）直接展示，
+    # 不做任何覆盖；只有没有标准报告时才生成简易版，避免把标准报告换成简单表格。
+    rich_marker = REPORT_DIR / "widgets"
+    if rich_marker.exists():
+        print("✅ 找到 Allure 标准报告，直接展示")
     else:
-        # 2. 没报告就生成简易版
         if not RESULTS_DIR.exists():
             print("❌ 找不到测试结果 (reports/allure-results)")
             print("   请先运行 run_tests.bat 执行测试")
             sys.exit(1)
         total, passed, failed = build_simple_report()
-        print(f"✅ 从 {total} 条测试数据生成了简易报告 (通过 {passed}, 失败 {failed})")
+        print(f"✅ 已从当前 {total} 条测试数据生成简易报告 (通过 {passed}, 失败 {failed})")
 
     # 3. 启动 HTTP 服务器
     os.chdir(str(REPORT_DIR))

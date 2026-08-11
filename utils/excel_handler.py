@@ -11,6 +11,7 @@ Excel 工具类 —— 负责从 Excel 读取测试用例，以及将测试结�
 import os
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill
 
 
 class ExcelHandler:
@@ -129,12 +130,23 @@ class ExcelHandler:
                 if ws.cell(row, id_column).value
             }
             missing: list[str] = []
+            # 失败标红（浅红背景+深红加粗文字），通过/跳过重置样式，避免旧红色残留
+            red_fill = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
+            red_font = Font(color="FF9C0006", bold=True)
             for case_id, result, row_num in results:
                 target_row = int(row_num) if row_num else row_by_id.get(str(case_id).strip())
                 if not target_row or target_row < 2 or target_row > ws.max_row:
                     missing.append(str(case_id))
                     continue
-                ws.cell(target_row, result_column).value = result
+                cell = ws.cell(target_row, result_column)
+                cell.value = result
+                result_text = str(result).lower()
+                if result_text.startswith("fail") or "error" in result_text:
+                    cell.fill = red_fill
+                    cell.font = red_font
+                else:
+                    cell.fill = PatternFill()
+                    cell.font = Font()
 
             if missing:
                 raise ValueError(f"以下用例未找到对应 Excel 行: {', '.join(missing)}")

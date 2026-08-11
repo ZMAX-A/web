@@ -53,7 +53,9 @@ class StepExecutor:
         operations = [item.strip() for item in str(operations_str).split(",")]
         if not isinstance(data_str, str):
             data_str = str(data_str) if data_str else ""
-        data_parts = [item.strip() for item in data_str.split("|")] if data_str else []
+        # 【空格保留】纯空格的数据位（如输入一个空格）strip 后会变成空串，
+        # 无法与真正的空数据区分；strip 后为空时保留原值。
+        data_parts = [item.strip() if item.strip() else item for item in data_str.split("|")] if data_str else []
 
         data_idx = 0
         for index, operation in enumerate(operations):
@@ -109,6 +111,8 @@ class StepExecutor:
                 self._do_daterange(locator, data)
             elif operation == "switch_tab":
                 self._do_switch_tab(locator)
+            elif operation == "retry_report":
+                self._do_retry_report(locator)
             else:
                 raise self._step_error(operation or "<空操作>", locator, "不支持的操作类型")
     @allure.step("输入文本 → {locator}")
@@ -211,28 +215,40 @@ class StepExecutor:
             日期/无
             共检测N次
 
-        locator 参数通常为 "共检测"（仅用作识别标识，实际按文本结构查找）
+        locator 支持两种格式：
+            "共检测"                     —— 点击第一个候选顾客（旧行为）
+            "共检测|验证定位器"            —— 逐个候选顾客尝试，点详情后验证
+                                            定位器可见；不可见则返回列表换下一个，
+                                            兼容详情页结构按顾客数据变化的场景
         """
         if not locator:
             raise self._step_error("find_click", locator, "缺少定位器")
             return
 
-        body = self.page.locator("body").inner_text()
-        lines = body.split("\n")
+        marker, _, validate_locator = locator.partition("|")
+        marker = (marker or "共检测").strip()
+        validate_locator = validate_locator.strip()
 
         # locator 为"共检测"时用默认正则（N>=1）；传"共检测1次"等则精确匹配
-        if locator and locator.strip() != "共检测":
-            pattern = locator.strip()
-        else:
-            pattern = r'共检测([1-9]\d*)次'
+        pattern = marker if marker != "共检测" else r'共检测([1-9]\d*)次'
 
-        target_line = -1
-        for i, line in enumerate(lines):
-            if re.search(pattern, line):
-                target_line = i
-                break
+        def _collect_candidates() -> list[int]:
+            """返回所有候选顾客「详情」链接的索引（卡片包含匹配行）"""
+            body = self.page.locator("body").inner_text()
+            lines = body.split("\n")
+            result = []
+            for i, line in enumerate(lines):
+                if not re.search(pattern, line):
+                    continue
+                # 从该行往回找最近的"详情"，计算它是第几个（从0开始）
+                for j in range(i, max(i - 10, -1), -1):
+                    if "详情" in lines[j]:
+                        result.append(len([l for l in lines[:j] if "详情" in l]))
+                        break
+            return result
 
-        if target_line == -1:
+        candidates = _collect_candidates()
+        if not candidates:
             # 【健壮性】首次未找到 → 可能是多测试积累导致列表未刷新，
             # 直接导航到顾客列表页重新加载再试一次
             logger.warning("第一次未找到有检测记录的顾客，刷新顾客列表重试...")
@@ -241,36 +257,69 @@ class StepExecutor:
                 self.page.wait_for_timeout(2000)
             except Exception as e:
                 logger.warning(f"刷新顾客列表页失败: {e}，尝试继续...")
-            body = self.page.locator("body").inner_text()
-            lines = body.split("\n")
-            for i, line in enumerate(lines):
-                if re.search(pattern, line):
-                    target_line = i
-                    logger.info("重试成功，已找到有检测记录的顾客")
-                    break
+            candidates = _collect_candidates()
+            if candidates:
+                logger.info("重试成功，已找到有检测记录的顾客")
 
-        if target_line == -1:
+        if not candidates:
             raise AssertionError(f"未找到匹配「{pattern}」的顾客卡片")
 
-        # 从该行往回找最近的"详情"
-        detail_idx = -1
-        for j in range(target_line, max(target_line - 10, -1), -1):
-            if "详情" in lines[j]:
-                # 计算这个"详情"是第几个（从0开始）
-                detail_idx = len([l for l in lines[:j] if "详情" in l])
+        # 无验证定位器：旧行为，直接点击第一个候选
+        if not validate_locator:
+            detail_idx = candidates[0]
+            details = self.page.locator("a:has-text('详情')")
+            if details.count() <= detail_idx:
+                raise AssertionError(f"详情链接数量不足: 需要第{detail_idx}个，实际{details.count()}个")
+            details.nth(detail_idx).click()
+            logger.info(f"    → 已点击第 {detail_idx} 个「详情」（有检测记录的顾客）")
+            self.__body_text = self.page.locator("body").inner_text()
+            self.page.wait_for_load_state("domcontentloaded", timeout=self.timeout_ms)
+            return
+
+        # 带验证定位器：逐个候选顾客尝试，验证通过才算成功
+        tried: set[int] = set()
+        last_error: Exception | None = None
+        for _ in range(max(len(candidates), 5)):
+            candidates = _collect_candidates()
+            remaining = [c for c in candidates if c not in tried]
+            if not remaining:
                 break
-
-        if detail_idx == -1:
-            raise AssertionError("找到检测记录但未找到对应的详情链接")
-
-        details = self.page.locator("a:has-text('详情')")
-        if details.count() <= detail_idx:
-            raise AssertionError(f"详情链接数量不足: 需要第{detail_idx}个，实际{details.count()}个")
-
-        details.nth(detail_idx).click()
-        logger.info(f"    → 已点击第 {detail_idx} 个「详情」（有检测记录的顾客）")
-        self.__body_text = self.page.locator("body").inner_text()
-        self.page.wait_for_load_state("domcontentloaded", timeout=self.timeout_ms)
+            detail_idx = remaining[0]
+            tried.add(detail_idx)
+            details = self.page.locator("a:has-text('详情')")
+            if details.count() <= detail_idx:
+                continue
+            details.nth(detail_idx).click()
+            try:
+                self.page.wait_for_load_state("domcontentloaded", timeout=self.timeout_ms)
+            except Exception:
+                pass
+            try:
+                self.page.locator(validate_locator).first.wait_for(state="visible", timeout=8000)
+                logger.info(f"    → 已点击第 {detail_idx} 个「详情」（有检测记录的顾客），验证元素存在")
+                self.__body_text = self.page.locator("body").inner_text()
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    f"    → 顾客[{detail_idx}] 详情页缺少验证元素「{validate_locator}」，"
+                    "退回首页重新进入顾客档案换下一个"
+                )
+                try:
+                    # 图标看不到多为 SPA 页面状态残留：退回首页再重新进入顾客档案
+                    # 可以重置列表状态（直接 go_back 不会刷新，图标可能依然不出现）
+                    self.page.goto(self.base_url, wait_until="domcontentloaded", timeout=15000)
+                    self.page.wait_for_timeout(1500)
+                    self.page.locator("div:text-is('顾客档案')").first.click(timeout=10000)
+                    self.page.wait_for_timeout(2000)
+                except Exception as e2:
+                    logger.warning(f"    退回首页重进列表失败: {e2}，尝试直接刷新列表")
+                    try:
+                        self.page.goto(f"{self.base_url}/customer", wait_until="domcontentloaded", timeout=15000)
+                        self.page.wait_for_timeout(2000)
+                    except Exception:
+                        pass
+        raise AssertionError(f"所有候选顾客详情页均缺少验证元素「{validate_locator}」: {last_error}")
 
     @allure.step("下拉选择: {value} → {locator}")
     def _do_select(self, locator: str, value: str) -> None:
@@ -419,6 +468,49 @@ class StepExecutor:
             logger.info("    → 已切换到标签页: %s", target.url[:80])
         except Exception as exc:
             raise self._step_error("switch_tab", locator, str(exc)) from exc
+    @allure.step("点击查看报告并确认完成按钮，失败则退回详情页重试: {locator}")
+    def _do_retry_report(self, locator: str) -> None:
+        """
+        定位器格式: "查看报告|完成按钮|影像记录"（用 | 分隔，避免与步骤分隔逗号冲突）
+
+        行为：
+            1. 等待并点击查看报告（进入新页面）
+            2. 等待右上角完成按钮出现
+            3. 若完成按钮未出现：点「返回」退回详情页 → 重新点击影像记录
+               进入阅览页 → 再看报告 → 等完成（最多 3 次）
+        """
+        parts = [p.strip() for p in (locator or "").split("|")]
+        if len(parts) < 3:
+            raise self._step_error("retry_report", locator, "需要3个定位器: 查看报告|完成|影像记录")
+        report_btn, done_btn, image_entrance = parts[:3]
+        last_error: Exception | None = None
+        for attempt in range(3):
+            # 1. 等待并点击查看报告（影像阅览页加载慢，给足 15s）
+            try:
+                self.page.locator(report_btn).first.wait_for(state="visible", timeout=15000)
+                self.page.locator(report_btn).first.click(timeout=self.timeout_ms)
+            except Exception as exc:
+                raise self._step_error("retry_report", locator, f"点击「{report_btn}」失败: {exc}") from exc
+            # 2. 等待完成按钮出现（报告页生成慢，给足 20s）
+            try:
+                self.page.locator(done_btn).first.wait_for(state="visible", timeout=20000)
+                logger.info(f"    → 「完成」按钮已出现（第{attempt + 1}次尝试）")
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"    → 「完成」按钮未出现（第{attempt + 1}次），退回详情页重试")
+            if attempt >= 2:
+                break
+            # 3. 退回详情页 → 重新点击影像记录进入阅览页
+            try:
+                self.page.locator("text=返回").first.click(timeout=5000)
+                self.page.wait_for_timeout(2000)
+                self.page.locator(image_entrance).first.click(timeout=10000)
+                self.page.wait_for_timeout(12000)
+            except Exception as exc:
+                raise self._step_error("retry_report", locator, f"退回详情页重进影像失败: {exc}") from exc
+        raise self._step_error("retry_report", locator, f"多次尝试后「完成」按钮仍未出现: {last_error}")
+
     def get_current_page(self):
         """获取当前操作的页面（可能在执行中切换了新标签页）"""
         return getattr(self, "_current_page", self.page)

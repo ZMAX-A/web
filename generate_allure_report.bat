@@ -23,4 +23,9 @@ if errorlevel 1 (
 )
 
 echo 报告已生成：reports\allure-report
+
+echo.
+echo 归档本次报告到 reports\history\...
+call .venv\Scripts\python.exe utils\archive_report.py
+
 call open_report.bat

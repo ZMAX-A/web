@@ -41,10 +41,16 @@ class AssertionExecutor:
                 return self._text_contains(verify_point, locator)
             if assert_type == "text_visible":
                 return self._text_visible(verify_point)
+            if assert_type == "text_hidden":
+                return self._text_hidden(verify_point)
             if assert_type == "text_not_empty":
                 return self._text_not_empty(locator)
+            if assert_type == "value_equals":
+                return self._value_equals(verify_point, locator)
             if assert_type == "element_visible":
                 return self._element_visible(locator)
+            if assert_type == "element_disabled":
+                return self._element_disabled(locator)
             if assert_type == "element_count":
                 return self._element_count(verify_point, locator)
             if assert_type == "attr_equals":
@@ -138,6 +144,23 @@ class AssertionExecutor:
             self.page.wait_for_timeout(500)
         missing = [keyword for keyword in keywords if keyword not in body_text]
         raise AssertionError(f"页面中未找到文本: {missing}")
+
+    @allure.step("验证文本已隐藏: {expected}")
+    def _text_hidden(self, expected: str) -> bool:
+        """断言文本在超时时间内从页面消失（如删除标签后不再显示）。"""
+        keywords = [item for item in self._extract_multi_keywords(expected) if item]
+        assert keywords, "文本隐藏断言缺少期望文本"
+
+        attempts = max(1, self.timeout_ms // 500)
+        for _ in range(attempts):
+            body_text = self.page.locator("body").inner_text()
+            if not any(keyword in body_text for keyword in keywords):
+                logger.info("  ✅ 文本已隐藏: %s", keywords)
+                return True
+            self.page.wait_for_timeout(500)
+        visible = [keyword for keyword in keywords if keyword in body_text]
+        raise AssertionError(f"页面仍可见文本: {visible}")
+
     @allure.step("验证文本不为空: {locator}")
     def _text_not_empty(self, locator: str) -> bool:
         assert locator, "text_not_empty 断言缺少定位器"
@@ -145,12 +168,35 @@ class AssertionExecutor:
         assert text.strip(), f"元素文本为空: {locator}"
         logger.info("  ✅ 文本不为空: %s", text[:30])
         return True
+
+    @allure.step("验证输入框值: {expected}")
+    def _value_equals(self, expected: str, locator: str) -> bool:
+        """断言输入框的值（input_value），验证点写「空」表示空字符串。"""
+        assert locator, "value_equals 断言缺少定位器"
+        expected_val = "" if expected.strip() == "空" else expected.strip()
+        value = self.page.locator(locator).first.input_value(timeout=self.timeout_ms)
+        assert value == expected_val, f"输入框值不匹配\n  期望: {expected_val!r}\n  实际: {value!r}"
+        logger.info("  ✅ 输入框值匹配: %r", value)
+        return True
     @allure.step("验证元素可见: {locator}")
     def _element_visible(self, locator: str) -> bool:
         assert locator, "element_visible 断言缺少定位器"
         element = self.page.locator(locator).first
         expect(element).to_be_visible(timeout=self.timeout_ms)
         logger.info("  ✅ 元素可见: %s", locator[:40])
+        return True
+
+    @allure.step("验证元素禁用: {locator}")
+    def _element_disabled(self, locator: str) -> bool:
+        """断言元素处于禁用状态（disabled 属性）。
+
+        新版 Ant Design 按钮禁用态不再加 ant-btn-disabled class，
+        而是通过 disabled 属性渲染灰色，class 检查不可靠，必须查属性。
+        """
+        assert locator, "element_disabled 断言缺少定位器"
+        element = self.page.locator(locator).first
+        expect(element).to_be_disabled(timeout=self.timeout_ms)
+        logger.info("  ✅ 元素已禁用: %s", locator[:40])
         return True
     @allure.step("验证元素数量: {expected}")
     def _element_count(self, expected: str, locator: str) -> bool:
