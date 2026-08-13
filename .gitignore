@@ -13,6 +13,11 @@ screenshots/
 
 # 环境变量（含敏感信息）
 .env
+.auth_state.json
+
+# 本地诊断脚本
+_guided_start.py
+_probe_mode.py
 
 # Python 缓存
 __pycache__/
