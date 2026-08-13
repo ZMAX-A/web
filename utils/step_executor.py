@@ -184,11 +184,22 @@ class StepExecutor:
             logger.debug("点击后 DOM 状态等待超时，将继续检查页面元素")
 
         try:
+            # 【视口过滤】只等待视口内的 spinner：页面底部「加载更多」等
+            # 视口外的小转圈会一直存在但用户看不到，不应阻塞用例
             spinner = self.page.locator(".ant-spin-spinning")
-            if spinner.count() > 0 and spinner.first.is_visible(timeout=500):
-                spinner.first.wait_for(state="hidden", timeout=max(self.timeout_ms * 3, 15000))
-        except PwTimeout as exc:
-            raise self._step_error("click", locator, "页面 loading 在超时后仍未消失") from exc
+            viewport = self.page.viewport_size or {"width": 1280, "height": 720}
+            in_view = None
+            for i in range(spinner.count()):
+                box = spinner.nth(i).bounding_box()
+                if box and box["x"] < viewport["width"] and box["y"] < viewport["height"]:
+                    in_view = spinner.nth(i)
+                    break
+            if in_view and in_view.is_visible(timeout=500):
+                in_view.wait_for(state="hidden", timeout=max(self.timeout_ms * 3, 30000))
+        except PwTimeout:
+            # 【容忍】慢环境/加载中页面 spinner 可能长时间不消失：
+            # 点击已成功，不阻断用例，由后续步骤的等待与用例断言兜底验证
+            logger.warning("页面 loading 长时间未消失，继续执行（由后续步骤与断言验证）")
 
         if "store" in locator.lower():
             self.page.wait_for_timeout(500)

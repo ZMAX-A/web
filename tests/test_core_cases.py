@@ -24,6 +24,32 @@ from utils.assertion_executor import AssertionExecutor
 
 logger = logging.getLogger("test_core_cases")
 
+# ==================== 登录态复用 ====================
+
+AUTH_STATE_FILE = Path(__file__).parent.parent / ".auth_state.json"
+
+
+def _login_state_reusable() -> bool:
+    """是否已保存可复用的登录状态（会话内首条用例登录后保存）"""
+    return AUTH_STATE_FILE.exists()
+
+
+def _save_login_state(page) -> None:
+    """首次登录成功后保存登录态，供后续用例复用（避免每条用例重复登录）"""
+    try:
+        page.context.storage_state(path=str(AUTH_STATE_FILE))
+        logger.info("✅ 已保存登录状态，后续用例将复用（不再重复登录）")
+    except Exception as exc:
+        logger.warning("保存登录状态失败（不影响本用例）: %s", exc)
+
+
+def _refresh_to_home(page, login_page) -> None:
+    """复用登录态时：不重新登录，直接刷新回首页初始状态"""
+    home_url = (login_page.base_url or "").replace("/login", "") or "/"
+    logger.info("▸ 复用登录状态，刷新回首页: %s", home_url)
+    page.goto(home_url, wait_until="domcontentloaded", timeout=15000)
+    page.wait_for_timeout(1000)
+
 
 # ==================== 加载测试用例 ====================
 
@@ -162,9 +188,14 @@ class TestCoreCases:
             return
         pc = preconditions.strip()
         if "已登录" in pc or "登录成功" in pc:
-            login_page.open()
-            login_page.login(test_username, test_password, select_store=True)
-            login_page.assert_login_success()
+            if _login_state_reusable():
+                # 【登录态复用】会话内首条用例已登录并保存状态，直接刷新回首页
+                _refresh_to_home(page, login_page)
+            else:
+                login_page.open()
+                login_page.login(test_username, test_password, select_store=True)
+                login_page.assert_login_success()
+                _save_login_state(page)
             # 【健壮性】「知道了」弹窗存在才点击；不存在直接跳过（避免 30s 超时等待）
             self._dismiss_modal_if_present(page)
         elif "打开登录" in pc or "未登录" in pc:
@@ -252,9 +283,15 @@ class TestCoreCases:
 
     @allure.step("公共登录")
     def _ensure_logged_in(self, login_page, username, password, page=None):
-        login_page.open()
-        login_page.login(username, password, select_store=True)
-        login_page.assert_login_success()
+        if _login_state_reusable() and page:
+            # 【登录态复用】不重新登录，直接刷新回首页初始状态
+            _refresh_to_home(page, login_page)
+        else:
+            login_page.open()
+            login_page.login(username, password, select_store=True)
+            login_page.assert_login_success()
+            if page:
+                _save_login_state(page)
         if page:
             # 【健壮性】「知道了」弹窗存在才点击；不存在直接跳过（避免 30s 超时等待）
             self._dismiss_modal_if_present(page)
