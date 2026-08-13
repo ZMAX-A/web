@@ -57,7 +57,45 @@ def run_tests(args=None):
 
     print("=" * 60)
 
+    # 生成 Allure 报告 + 归档 + 启动报告服务器（与 run_tests.bat 行为一致）
+    _generate_report_and_serve()
+
     return result.returncode
+
+
+def _generate_report_and_serve() -> None:
+    """生成 Allure 报告、归档到 history/，并启动 8899 报告服务器。"""
+    print("生成 Allure 报告...")
+    gen = subprocess.run(
+        # shell=True：Windows 下 allure 是 .cmd 命令，需经 shell 解析
+        "allure generate reports/allure-results -o reports/allure-report --clean",
+        cwd=PROJECT_ROOT,
+        shell=True,
+        capture_output=True,
+        text=True,
+    )
+    if gen.returncode != 0:
+        print("报告生成失败，请安装 Allure CLI: npm install -g allure-commandline")
+        print(gen.stderr[-500:] if gen.stderr else "")
+        return
+    print("报告已生成: reports/allure-report")
+
+    print("归档本次报告...")
+    subprocess.run(
+        [str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"), "utils/archive_report.py"],
+        cwd=PROJECT_ROOT,
+    )
+
+    # 启动报告服务器（8899）
+    server = subprocess.Popen(
+        [str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"), "-m", "http.server", "8899", "-d", "reports/allure-report"],
+        cwd=PROJECT_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    import webbrowser
+    webbrowser.open("http://localhost:8899")
+    print("报告服务器已启动: http://localhost:8899")
 
 
 def main():
