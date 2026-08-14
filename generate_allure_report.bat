@@ -28,4 +28,4 @@ echo.
 echo 归档本次报告到 reports\history\...
 call .venv\Scripts\python.exe utils\archive_report.py
 
-call open_report.bat
+call .venv\Scripts\python.exe utils\serve_report.py

@@ -11,6 +11,10 @@ import sys
 import webbrowser
 from pathlib import Path
 
+# 中文 Windows 控制台为 GBK 编码，emoji 输出到管道时会 UnicodeEncodeError
+sys.stdout.reconfigure(errors="replace")
+sys.stderr.reconfigure(errors="replace")
+
 PORT = 8891
 HISTORY_DIR = Path(__file__).resolve().parent.parent / "reports" / "history"
 

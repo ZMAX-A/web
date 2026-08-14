@@ -163,17 +163,48 @@ class LoginPage(BasePage):
         return option_text or "未知门店"
 
     def select_store_by_name(self, store_name: str) -> None:
-        """按名称选择指定门店"""
+        """
+        按名称选择指定门店；门店不存在时立即报错。
+
+        历史行为：找不到门店时静默跳过选择，登录时被前端「请选择门店」拦截，
+        最后在 assert_login_success 里报出误导性的「登录失败，仍在登录页」，
+        浪费 15 秒且无法定位是配置问题。现在改为快速失败，并列出实际可选项。
+        """
         logger.info(f"选择门店: {store_name}")
-        self.page.locator(self.STORE_SELECTOR).first.click()
-        self.wait_for_timeout(1500)
+
+        # 打开下拉并等待选项渲染（显式等待，避免接口慢时误判为不存在）
+        option_texts: list[str] = []
+        for attempt in range(3):
+            self.page.locator(self.STORE_SELECTOR).first.click()
+            try:
+                self.page.wait_for_selector(".ant-select-item-option", timeout=4000)
+                option_texts = [
+                    text.strip()
+                    for text in self.page.locator(".ant-select-item-option").all_inner_texts()
+                ]
+                break
+            except PwTimeout:
+                logger.warning(f"门店下拉未出现选项（第 {attempt + 1} 次尝试），关闭后重试...")
+                self.page.keyboard.press("Escape")
+                self.wait_for_timeout(500)
+
+        if not option_texts:
+            raise AssertionError(
+                f"门店下拉未能加载任何选项，无法选择门店「{store_name}」"
+                "（检查账号门店权限或 /accesses 接口是否正常）"
+            )
 
         option = self.page.get_by_text(store_name, exact=True)
-        if option.count() > 0:
-            option.first.click()
-        else:
-            logger.warning(f"未找到门店: {store_name}")
-            self.page.keyboard.press("Escape")
+        if option.count() == 0:
+            shown = "、".join(option_texts[:10])
+            if len(option_texts) > 10:
+                shown += f"…（共 {len(option_texts)} 个）"
+            raise AssertionError(
+                f"配置的门店「{store_name}」不存在，实际可选项: {shown}"
+                "（请修正 .env 的 STORE_NAME，或留空以使用第一个门店）"
+            )
+        option.first.click()
+        logger.info(f"已选择门店: {store_name}")
 
         self.wait_for_timeout(500)
         self.page.keyboard.press("Escape")
