@@ -364,6 +364,19 @@ def pytest_sessionfinish(session, exitstatus):
 
 def pytest_configure(config):
     """配置 pytest，将环境信息写入 Allure"""
+    # 【ANSI 颜色】启用 Windows 控制台的 VT 处理，否则 PASSED/FAILED 及
+    # 进度百分比（PASSED 绿色 / FAILED 红色）不显示颜色
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_uint32()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+                kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+        except Exception:
+            pass
     # 写入 Allure 环境信息（将在 Allure 报告的 Environment 页显示）
     allure_dir = getattr(config.option, "alluredir", None) or "reports/allure-results"
     env_path = Path(allure_dir) / "environment.properties"
