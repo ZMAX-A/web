@@ -10,6 +10,7 @@ pytest 全局配置文件 —— 提供 fixture 和 hook
 """
 import os
 import sys
+import json
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -35,6 +36,14 @@ from pages.personal_center_page import PersonalCenterPage
 from pages.recently_deleted_page import RecentlyDeletedPage
 from pages.cloud_storage_page import CloudStoragePage
 from utils.excel_handler import ExcelHandler
+from utils.parallel_execution import (
+    account_env_value,
+    auth_state_path,
+    current_account_slot,
+    current_worker_id,
+    result_file_path,
+    screenshot_dir as runtime_screenshot_dir,
+)
 
 # ==================== 日志配置 ====================
 # 【新增】统一的日志配置，测试运行时的所有日志都会显示
@@ -62,23 +71,24 @@ def base_url() -> str:
 @pytest.fixture(scope="session")
 def test_username() -> str:
     """测试账号"""
-    username = os.getenv("TEST_USERNAME", "")
-    logger.info("TEST_USERNAME 已配置: %s", bool(username))
+    username = account_env_value("TEST_USERNAME")
+    slot = current_account_slot()
+    logger.info("测试账号%s已配置: %s", f" {slot}" if slot else "", bool(username))
     return username
 
 
 @pytest.fixture(scope="session")
 def test_password() -> str:
     """测试密码"""
-    password = os.getenv("TEST_PASSWORD", "")
-    logger.info("TEST_PASSWORD = ******")
+    password = account_env_value("TEST_PASSWORD")
+    logger.info("测试密码已配置: %s", bool(password))
     return password
 
 
 @pytest.fixture(scope="session")
 def store_name() -> str:
     """登录门店名称；留空则默认选择第一个门店"""
-    name = os.getenv("STORE_NAME", "").strip()
+    name = account_env_value("STORE_NAME").strip()
     logger.info(f"STORE_NAME = {name or '(未配置，默认第一个门店)'}")
     return name
 
@@ -168,12 +178,13 @@ def cloud_storage_page(page, base_url) -> CloudStoragePage:
 @pytest.fixture(scope="session")
 def auth_state_file() -> Path:
     """登录状态缓存文件路径，用于跨测试用例复用登录态。"""
-    return Path(__file__).parent.parent / ".auth_state.json"
+    return auth_state_path()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def clean_auth_state(auth_state_file):
     """测试前后都清理登录缓存，避免 Cookie/LocalStorage 长期落盘。"""
+    auth_state_file.parent.mkdir(parents=True, exist_ok=True)
     if auth_state_file.exists():
         auth_state_file.unlink()
         logger.info("已清理旧的登录状态缓存")
@@ -186,12 +197,15 @@ def clean_auth_state(auth_state_file):
 
 
 @pytest.fixture(scope="function")
-def browser_context_args(auth_state_file):
+def browser_context_args(request, auth_state_file):
     """
     覆写 playwright 的 browser_context_args 注入已保存的登录状态。
     首个「已登录」用例会执行真实登录并保存 state，后续用例自动复用。
     """
-    if auth_state_file.exists():
+    test_case_data = _case_data_from_item(request.node)
+    preconditions = str((test_case_data or {}).get("前置条件", ""))
+    requires_blank_context = "打开登录" in preconditions or "未登录" in preconditions
+    if auth_state_file.exists() and not requires_blank_context:
         logger.info("▸ 复用已保存的登录状态，跳过登录流程")
         return {"storage_state": str(auth_state_file)}
     return {}
@@ -297,7 +311,7 @@ def auto_result_handler(request, page):
                 name=f"{case_id}_失败截图",
                 attachment_type=allure.attachment_type.PNG,
             )
-            screenshot_dir = Path(__file__).parent.parent / "screenshots"
+            screenshot_dir = runtime_screenshot_dir()
             screenshot_dir.mkdir(parents=True, exist_ok=True)
             safe_name = str(case_id).replace("/", "_").replace("\\", "_").replace(":", "_")
             timestamp = datetime.now().strftime("%m%d_%H%M%S")
@@ -315,8 +329,10 @@ def auto_result_handler(request, page):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """所有 teardown 完成后一次性把 setup/call/teardown 的最终结果写回 Excel。"""
+    """收集最终结果；Worker 写 JSON，传统单进程仍一次性回写 Excel。"""
     updates: list[tuple[str, str, int | None]] = []
+    result_records: list[dict] = []
+    collected_case_ids: list[str] = []
     for item in session.items:
         test_case_data = _case_data_from_item(item)
         if not test_case_data:
@@ -324,6 +340,7 @@ def pytest_sessionfinish(session, exitstatus):
         case_id = test_case_data.get("用例ID", "") or test_case_data.get("编号", "")
         if not case_id:
             continue
+        collected_case_ids.append(case_id)
         reports = [
             getattr(item, "rep_setup", None),
             getattr(item, "rep_call", None),
@@ -344,16 +361,43 @@ def pytest_sessionfinish(session, exitstatus):
             result = "pass"
         else:
             result = "fail: 用例未进入执行阶段"
-        updates.append((case_id, result, test_case_data.get("_row")))
+        row_num = test_case_data.get("_row")
+        updates.append((case_id, result, row_num))
+        result_records.append({
+            "case_id": case_id,
+            "status": result.split(":", 1)[0],
+            "result": result,
+            "row": row_num,
+            "duration": round(sum(
+                float(report.duration)
+                for report in reports
+                if report and getattr(report, "duration", None) is not None
+            ), 3),
+        })
 
     try:
-        if updates:
+        worker_result_file = result_file_path()
+        if worker_result_file:
+            worker_result_file.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "run_id": os.getenv("TEST_RUN_ID", ""),
+                "worker_id": current_worker_id(),
+                "account_slot": current_account_slot(),
+                "exitstatus": int(exitstatus),
+                "collected_case_ids": collected_case_ids,
+                "results": result_records,
+            }
+            temp_file = worker_result_file.with_suffix(worker_result_file.suffix + ".tmp")
+            temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temp_file, worker_result_file)
+            logger.info("Worker 结果已写入: %s（%s 条）", worker_result_file, len(result_records))
+        elif updates:
             ExcelHandler(_get_excel_path()).write_results(updates)
             logger.info("已批量回写 %s 条 Excel 结果", len(updates))
     except Exception as exc:
         logger.error("Excel 结果批量回写失败（不改变 pytest 退出码）: %s", exc)
     finally:
-        auth_path = Path(__file__).parent.parent / ".auth_state.json"
+        auth_path = auth_state_path()
         if not session.config.option.collectonly and auth_path.exists():
             try:
                 auth_path.unlink()
@@ -389,6 +433,9 @@ def pytest_configure(config):
         f.write(f"pytest版本={pytest.__version__}\n")
         f.write(f"操作系统={os.name}\n")
         f.write(f"浏览器=Chromium\n")
+        f.write(f"运行ID={os.getenv('TEST_RUN_ID', 'single')}\n")
+        f.write(f"Worker={current_worker_id() or 'single'}\n")
+        f.write(f"账号槽位={current_account_slot() or 'legacy'}\n")
         f.write(f"执行时间={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 
