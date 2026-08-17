@@ -9,7 +9,20 @@
 - 只有需要数据的操作才从「输入数据」消费一项，多项数据用竖线 `|` 分隔。
 - 「超时(秒)」必须是正数，用于当前用例的元素操作和断言等待。
 - 每条用例必须有真实断言。未知或空断言会直接失败。
+- 「执行分组」只允许 `A`、`B`、`SERIAL`、`AUTO`；留空等同 `AUTO`。
 - 建议新增「断言定位器」列。未提供时，框架兼容使用「元素定位器」中的最后一个非空值。
+
+并行分组含义：
+
+| 值 | 含义 |
+|---|---|
+| `A` | Worker A 使用账号 A 执行 |
+| `B` | Worker B 使用账号 B 执行 |
+| `SERIAL` | A/B 完成后再串行执行，适合共享数据或全局配置用例 |
+| `AUTO` 或空 | 按模块默认映射；未知模块自动分配到当前较少的一组 |
+
+测试数据支持 `${WORKER_ID}` 与 `${TIMESTAMP}` 占位符。例如
+`自动化顾客-${WORKER_ID}-${TIMESTAMP}` 会为两个 Worker 生成不同名称。
 
 例如：先等待 0.5 秒，再从输入数据导航到 `/customer`，等待 2 秒后查找顾客：
 
@@ -67,5 +80,7 @@
 
 - 全量无头运行：双击 `run_tests.bat`
 - 全量有头运行：双击 `run_tests_headed.bat`
+- 双账号双进程运行：双击 `run_parallel_tests.bat`
+- 仅检查双进程分组：`.venv\Scripts\python.exe run_parallel_tests.py --dry-run`
 - 单条用例：双击 `run_one_case.bat`，输入用例ID
 - 仅离线框架检查：`.venv\Scripts\python.exe -m pytest unit_tests -q -o "addopts="`

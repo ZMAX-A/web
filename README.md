@@ -10,6 +10,8 @@
 ```
 颜佳AI-web自动化测试/
 ├── run_tests.bat              ← 一键运行（双击即可）
+├── run_parallel_tests.bat     ← 双账号双进程运行（推荐全量回归）
+├── run_parallel_tests.py      ← 并行调度、结果与报告汇总
 ├── requirements.txt           ← Python 依赖列表
 ├── .env                       ← 测试环境配置（账号密码）
 ├── .env.example               ← 配置模板
@@ -69,6 +71,18 @@ TEST_USERNAME=你的账号
 TEST_PASSWORD=你的密码
 ```
 
+如需使用双进程全量回归，需在 `.env` 中配置两个不同账号：
+
+```dotenv
+TEST_USERNAME_A=账号A
+TEST_PASSWORD_A=密码A
+STORE_NAME_A=
+
+TEST_USERNAME_B=账号B
+TEST_PASSWORD_B=密码B
+STORE_NAME_B=
+```
+
 > 💡 或者直接双击 `run_tests.bat`，它会自动检测并引导你填写
 
 ### 第 3 步：编辑测试用例（每次新增/修改用）
@@ -96,6 +110,28 @@ TEST_PASSWORD=你的密码
 | ⑦ 生成测试报告 | 自动 | 需安装 Allure（可选） |
 
 > 首次运行约 **10 分钟**，之后每次只需 **测试执行时间**。
+
+### 双账号并行运行
+
+双击 `run_parallel_tests.bat` 后，主调度器会：
+
+1. 校验 Excel、分组和两套账号。
+2. 同时启动 Worker A 与 Worker B。
+3. 为两边分别保存登录态、截图、JSON 与 Allure 原始结果。
+4. 两个 Worker 结束后，由主进程一次性回写 Excel。
+5. 在 `reports/runs/RUN-时间/` 生成统一摘要与 Allure 报告。
+
+默认分组为：
+
+- A：顾客详情、影像阅览、首页搜索。
+- B：账号登录、顾客列表、首页、首页跳转、案例库、个人中心。
+- `SERIAL`：A/B 结束后单独执行。
+
+可先运行以下命令只检查分组，不启动浏览器：
+
+```powershell
+.\.venv\Scripts\python.exe run_parallel_tests.py --dry-run
+```
 
 ---
 
@@ -170,6 +206,9 @@ winget install Allure.Allure
 
 ### Q：想只跑某几个用例怎么办？
 → 双击 `run_one_case.bat`，输入用例ID（例如 `TC-DETAIL-004`）。不要为了筛选用例删除 Excel 行。
+
+### Q：双进程登录仍然冲突怎么办？
+→ 确认 `.env` 中 A/B 是两个不同账号，并为两个账号准备各自的测试顾客数据。公共配置、删除类或可能修改共享数据的用例应在 Excel「执行分组」列填写 `SERIAL`。
 
 ### Q：Mac / Linux 怎么用？
 → 项目支持，但需要从终端运行命令。暂时没有提供 .sh 脚本，如有需要可以联系我们。

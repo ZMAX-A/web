@@ -2,7 +2,7 @@
 通用测试用例 —— 数据驱动执行
 
 核心逻辑：
-1. 自动检测 Excel 格式（新版16列 / 旧版10列）
+1. 自动检测 Excel 格式（新版关键字格式 / 旧版10列）
 2. 新版格式：直接用 StepExecutor 执行操作 + AssertionExecutor 执行断言
 3. 旧版格式：走 if/elif 路由到对应页面对象方法
 
@@ -21,12 +21,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.excel_handler import ExcelHandler
 from utils.step_executor import StepExecutor
 from utils.assertion_executor import AssertionExecutor
+from utils.parallel_execution import (
+    auth_state_path,
+    cases_for_worker,
+    current_worker_id,
+    substitute_runtime_tokens,
+)
 
 logger = logging.getLogger("test_core_cases")
 
 # ==================== 登录态复用 ====================
 
-AUTH_STATE_FILE = Path(__file__).parent.parent / ".auth_state.json"
+AUTH_STATE_FILE = auth_state_path()
 
 
 def _login_state_reusable() -> bool:
@@ -37,6 +43,7 @@ def _login_state_reusable() -> bool:
 def _save_login_state(page) -> None:
     """首次登录成功后保存登录态，供后续用例复用（避免每条用例重复登录）"""
     try:
+        AUTH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         page.context.storage_state(path=str(AUTH_STATE_FILE))
         logger.info("✅ 已保存登录状态，后续用例将复用（不再重复登录）")
     except Exception as exc:
@@ -67,8 +74,11 @@ def _load_test_cases() -> list[dict]:
                        if str(c.get("是否执行", "是")).strip() in ("否", "N", "n")]
             if skipped:
                 logger.info(f"已跳过 {len(skipped)} 条未执行用例: {skipped}")
-            return [c for c in cases
-                    if str(c.get("是否执行", "是")).strip() not in ("否", "N", "n")]
+            selected = cases_for_worker(cases)
+            worker = current_worker_id()
+            if worker:
+                logger.info("Worker %s 分配到 %s 条用例", worker, len(selected))
+            return selected
     raise FileNotFoundError("test_cases/ 目录下没有可用的 Excel 文件")
 
 ALL_TEST_CASES = _load_test_cases()
@@ -119,9 +129,12 @@ class TestCoreCases:
         base_url,
         test_username,
         test_password,
+        store_name,
     ):
         if IS_NEW_FORMAT:
-            self._execute_new(test_case, page, login_page, test_username, test_password, base_url)
+            self._execute_new(
+                test_case, page, login_page, test_username, test_password, store_name, base_url
+            )
         else:
             self._execute_old(
                 test_case, page, login_page, home_page, case_list_page,
@@ -132,7 +145,9 @@ class TestCoreCases:
     # ==================== 新版：Excel 规范直接驱动 ====================
 
     @allure.step("新版关键字驱动执行")
-    def _execute_new(self, test_case, page, login_page, test_username, test_password, base_url):
+    def _execute_new(
+        self, test_case, page, login_page, test_username, test_password, store_name, base_url
+    ):
         case_id = test_case.get("用例ID", "")
         module = test_case.get("模块", "")
         scenario = test_case.get("测试场景", "")
@@ -142,6 +157,7 @@ class TestCoreCases:
         data_str = str(test_case.get("输入数据", "") or "")
         data_str = data_str.replace("${TEST_USERNAME}", test_username)
         data_str = data_str.replace("${TEST_PASSWORD}", test_password)
+        data_str = substitute_runtime_tokens(data_str)
         expected = test_case.get("期望结果", "")
         verify_point = test_case.get("验证点", "")
         assert_type = test_case.get("断言类型", "")
@@ -163,7 +179,9 @@ class TestCoreCases:
             page.route("**/accesses", store_or_login)
 
         # 处理前置条件
-        self._handle_preconditions(preconditions, page, login_page, test_username, test_password)
+        self._handle_preconditions(
+            preconditions, page, login_page, test_username, test_password, store_name
+        )
 
         # 执行操作步骤
         executor = StepExecutor(page, base_url)
@@ -183,7 +201,9 @@ class TestCoreCases:
         logger.info(f"[{case_id}] ✅ 完成")
 
     @allure.step("处理前置条件: {preconditions}")
-    def _handle_preconditions(self, preconditions, page, login_page, test_username, test_password):
+    def _handle_preconditions(
+        self, preconditions, page, login_page, test_username, test_password, store_name
+    ):
         if not preconditions:
             return
         pc = preconditions.strip()
@@ -193,7 +213,12 @@ class TestCoreCases:
                 _refresh_to_home(page, login_page)
             else:
                 login_page.open()
-                login_page.login(test_username, test_password, select_store=True)
+                login_page.login(
+                    test_username,
+                    test_password,
+                    select_store=True,
+                    store_name=store_name,
+                )
                 login_page.assert_login_success()
                 _save_login_state(page)
             # 【健壮性】「知道了」弹窗存在才点击；不存在直接跳过（避免 30s 超时等待）
