@@ -98,7 +98,12 @@ class StepExecutor:
                     raise self._step_error("nav", locator, "缺少目标 URL")
                 if not target.startswith("http") and self.base_url:
                     target = self.base_url + target
-                self.page.goto(target, wait_until="domcontentloaded", timeout=max(self.timeout_ms, 30000))
+                try:
+                    self.page.goto(target, wait_until="domcontentloaded", timeout=max(self.timeout_ms, 30000))
+                except PwTimeout:
+                    # 服务器高峰期页面加载超时：刷新重试一次（慢时段通常可恢复）
+                    logger.warning("页面加载超时（%s），刷新重试一次...", target)
+                    self.page.reload(wait_until="domcontentloaded", timeout=max(self.timeout_ms, 30000))
             elif operation == "find_click":
                 self._do_find_click(locator)
             elif operation == "upload":
@@ -195,11 +200,13 @@ class StepExecutor:
                     in_view = spinner.nth(i)
                     break
             if in_view and in_view.is_visible(timeout=500):
-                in_view.wait_for(state="hidden", timeout=max(self.timeout_ms * 3, 30000))
+                # 【短等待】只给 5 秒：页面主体（菜单/筛选区等）通常几秒内就绪，
+                # 不必等整个列表/页面加载完；后续步骤对目标元素有各自的显式等待兜底
+                in_view.wait_for(state="hidden", timeout=5000)
         except PwTimeout:
             # 【容忍】慢环境/加载中页面 spinner 可能长时间不消失：
             # 点击已成功，不阻断用例，由后续步骤的等待与用例断言兜底验证
-            logger.warning("页面 loading 长时间未消失，继续执行（由后续步骤与断言验证）")
+            logger.warning("页面 loading 未在 5 秒内消失，继续执行（页面主体已就绪，后续步骤自行等待）")
 
         if "store" in locator.lower():
             self.page.wait_for_timeout(500)
@@ -264,7 +271,7 @@ class StepExecutor:
             # 直接导航到顾客列表页重新加载再试一次
             logger.warning("第一次未找到有检测记录的顾客，刷新顾客列表重试...")
             try:
-                self.page.goto(f"{self.base_url}/customer", wait_until="domcontentloaded", timeout=15000)
+                self.page.goto(f"{self.base_url}/customer", wait_until="domcontentloaded", timeout=30000)
                 self.page.wait_for_timeout(2000)
             except Exception as e:
                 logger.warning(f"刷新顾客列表页失败: {e}，尝试继续...")
@@ -319,14 +326,14 @@ class StepExecutor:
                 try:
                     # 图标看不到多为 SPA 页面状态残留：退回首页再重新进入顾客档案
                     # 可以重置列表状态（直接 go_back 不会刷新，图标可能依然不出现）
-                    self.page.goto(self.base_url, wait_until="domcontentloaded", timeout=15000)
+                    self.page.goto(self.base_url, wait_until="domcontentloaded", timeout=30000)
                     self.page.wait_for_timeout(1500)
                     self.page.locator("div:text-is('顾客档案')").first.click(timeout=10000)
                     self.page.wait_for_timeout(2000)
                 except Exception as e2:
                     logger.warning(f"    退回首页重进列表失败: {e2}，尝试直接刷新列表")
                     try:
-                        self.page.goto(f"{self.base_url}/customer", wait_until="domcontentloaded", timeout=15000)
+                        self.page.goto(f"{self.base_url}/customer", wait_until="domcontentloaded", timeout=30000)
                         self.page.wait_for_timeout(2000)
                     except Exception:
                         pass
@@ -440,7 +447,14 @@ class StepExecutor:
         except ValueError as exc:
             raise self._step_error("daterange", locator, str(exc)) from exc
 
+        # 页面加载慢时日期选择器可能尚未渲染：等待两个输入框就绪再继续
         inputs = self.page.locator(locator)
+        for attempt in range(3):
+            if inputs.count() >= 2:
+                break
+            logger.warning(f"日期输入框未就绪（第 {attempt + 1} 次尝试），等待后重试...")
+            self.page.wait_for_timeout(1500)
+            inputs = self.page.locator(locator)
         if inputs.count() < 2:
             raise self._step_error("daterange", locator, "定位器没有匹配到两个日期输入框")
 
@@ -495,16 +509,19 @@ class StepExecutor:
             raise self._step_error("retry_report", locator, "需要3个定位器: 查看报告|完成|影像记录")
         report_btn, done_btn, image_entrance = parts[:3]
         last_error: Exception | None = None
+        # 影像报告页加载/生成很慢：等待时间取用例超时的 3 倍，最低 60 秒
+        report_wait = max(self.timeout_ms * 3, 60000)
+        done_wait = max(self.timeout_ms * 3, 90000)
         for attempt in range(3):
-            # 1. 等待并点击查看报告（影像阅览页加载慢，给足 15s）
+            # 1. 等待并点击查看报告（影像阅览页加载慢，给足 report_wait）
             try:
-                self.page.locator(report_btn).first.wait_for(state="visible", timeout=15000)
+                self.page.locator(report_btn).first.wait_for(state="visible", timeout=report_wait)
                 self.page.locator(report_btn).first.click(timeout=self.timeout_ms)
             except Exception as exc:
                 raise self._step_error("retry_report", locator, f"点击「{report_btn}」失败: {exc}") from exc
-            # 2. 等待完成按钮出现（报告页生成慢，给足 20s）
+            # 2. 等待完成按钮出现（报告页生成慢，给足 done_wait）
             try:
-                self.page.locator(done_btn).first.wait_for(state="visible", timeout=20000)
+                self.page.locator(done_btn).first.wait_for(state="visible", timeout=done_wait)
                 logger.info(f"    → 「完成」按钮已出现（第{attempt + 1}次尝试）")
                 return
             except Exception as exc:

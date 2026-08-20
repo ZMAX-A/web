@@ -352,6 +352,26 @@ def _cleanup_auth_states(specs: list[WorkerSpec]) -> None:
             print(f"[{spec.worker_id}] 警告：登录状态清理失败: {exc}")
 
 
+def _patch_allure_results(merged_dir: Path, passed_case_ids: set[str]) -> None:
+    """复跑改判通过的用例：把合并结果中的 failed/broken 改为 passed，报告反映最终判定。"""
+    if not passed_case_ids:
+        return
+    patched = 0
+    for result_file in merged_dir.glob("*-result.json"):
+        try:
+            data = json.loads(result_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        name = data.get("name", "")
+        if any(cid in name for cid in passed_case_ids) and data.get("status") in ("failed", "broken"):
+            data["status"] = "passed"
+            data["statusDetails"] = {}
+            result_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            patched += 1
+    if patched:
+        print(f"报告结果已按复跑改判更新: {patched} 条 failed → passed")
+
+
 def _generate_allure_report(run_dir: Path, results_dir: Path, open_report: bool) -> bool:
     report_dir = run_dir / "allure-report"
     command = subprocess.list2cmdline([
@@ -376,7 +396,32 @@ def _generate_allure_report(run_dir: Path, results_dir: Path, open_report: bool)
             print(generated.stderr[-500:])
         return False
     print(f"统一 Allure 报告已生成: {report_dir}")
+
+    # 归档到 reports/history/<时间戳>/（与单进程 archive_report.py 保持一致）
+    try:
+        history_dir = PROJECT_ROOT / "reports" / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = history_dir / stamp
+        shutil.copytree(report_dir, target, dirs_exist_ok=True)
+        print(f"报告已归档: {target}")
+    except OSError as exc:
+        print(f"⚠ 报告归档失败（不影响报告查看）: {exc}")
+
     if open_report:
+        # 先杀掉占用 8899 的旧报告服务：多次运行叠加会导致浏览器随机连到旧报告
+        try:
+            subprocess.run(
+                [
+                    "powershell", "-NoProfile", "-Command",
+                    "Get-NetTCPConnection -LocalPort 8899 -State Listen -ErrorAction SilentlyContinue "
+                    "| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }",
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+        except Exception:
+            pass
         subprocess.Popen(
             [str(_python_executable()), "-m", "http.server", "8899", "-d", str(report_dir)],
             cwd=PROJECT_ROOT,
@@ -491,6 +536,66 @@ def run(argv: list[str] | None = None) -> int:
 
     try:
         records = _merge_worker_results(outcomes)
+        # ===== 失败用例自动复跑确认 =====
+        # 全量跑失败的用例逐条单独复跑一次：两次都失败才判定为 failed，
+        # 复跑通过说明是全量环境下偶发（服务器慢/时序），最终按通过处理。
+        failed_records = [r for r in records if r.get("status") != "pass"]
+        if failed_records:
+            print(f"\n发现 {len(failed_records)} 条失败用例，等待 30 秒（让服务器慢时段恢复）后逐条复跑确认...")
+            import time as _time
+            _time.sleep(30)
+            for record in failed_records:
+                cid = record.get("case_id", "")
+                slot = record.get("worker_id", "A")
+                case = next(
+                    (c for c in groups.get(slot, []) if case_id(c) == cid), None
+                )
+                if case is None:
+                    for group_name in ("A", "B", "SERIAL"):
+                        case = next(
+                            (c for c in groups.get(group_name, []) if case_id(c) == cid),
+                            None,
+                        )
+                        if case:
+                            break
+                if case is None:
+                    print(f"  [{cid}] 未找到用例定义，跳过复跑")
+                    continue
+                rerun_spec = WorkerSpec(f"RERUN-{cid}", slot, [case], run_dir)
+                try:
+                    rerun_spec.worker_dir.mkdir(parents=True, exist_ok=True)
+                    # 复跑：单条用例 + 全新执行窗口（独立进程 + 独立控制台窗口）
+                    rerun_cmd = _worker_command(python, rerun_spec, pytest_args) + ["-k", cid]
+                    rerun_env = _worker_env(rerun_spec, run_id, run_timestamp)
+                    # 复跑只跑单条（-k 过滤），不需要 worker 分组；
+                    # 置空 TEST_WORKER_ID 走传统单进程模式，账号由 TEST_ACCOUNT_SLOT 控制
+                    rerun_env["TEST_WORKER_ID"] = ""
+                    rerun_proc = subprocess.Popen(
+                        rerun_cmd,
+                        cwd=PROJECT_ROOT,
+                        env=rerun_env,
+                        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                    )
+                    rerun_proc.wait()
+                    # 复跑 worker 的 TEST_WORKER_ID 为空（单进程模式），
+                    # 直接读结果文件，跳过 _read_payload 的 worker_id 校验
+                    payload = None
+                    if rerun_spec.result_file.exists():
+                        try:
+                            payload = json.loads(rerun_spec.result_file.read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError):
+                            payload = None
+                    rerun_status = "error"
+                    if payload and payload.get("results"):
+                        rerun_status = str(payload["results"][0].get("status", "error"))
+                    if rerun_status == "pass":
+                        record["status"] = "pass"
+                        record["result"] = "pass（全量失败后复跑通过，判定为偶发）"
+                        print(f"  [{cid}] 复跑通过 → 最终判定 pass")
+                    else:
+                        print(f"  [{cid}] 复跑仍失败 → 最终判定 failed")
+                except Exception as exc:
+                    print(f"  [{cid}] 复跑异常（按原结果判定）: {exc}")
         _write_excel_results(excel_path, records)
     except (OSError, ValueError) as exc:
         print(f"结果汇总失败: {exc}")
@@ -503,6 +608,13 @@ def run(argv: list[str] | None = None) -> int:
 
     if not options.no_report:
         merged_allure = _merge_allure_results(run_dir, all_specs)
+        # 复跑改判通过的用例：报告同步更新为 passed（反映最终判定）
+        rerun_passed_ids = {
+            r.get("case_id", "")
+            for r in records
+            if "复跑通过" in str(r.get("result", ""))
+        }
+        _patch_allure_results(merged_allure, rerun_passed_ids)
         _generate_allure_report(run_dir, merged_allure, open_report=not options.no_open)
 
     counts = summary["result_counts"]

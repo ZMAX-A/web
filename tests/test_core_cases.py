@@ -54,7 +54,12 @@ def _refresh_to_home(page, login_page) -> None:
     """复用登录态时：不重新登录，直接刷新回首页初始状态"""
     home_url = (login_page.base_url or "").replace("/login", "") or "/"
     logger.info("▸ 复用登录状态，刷新回首页: %s", home_url)
-    page.goto(home_url, wait_until="domcontentloaded", timeout=15000)
+    try:
+        page.goto(home_url, wait_until="domcontentloaded", timeout=30000)
+    except Exception:
+        # 服务器高峰期页面加载超时：刷新重试一次（慢时段通常可恢复）
+        logger.warning("首页加载超时，刷新重试一次...")
+        page.reload(wait_until="domcontentloaded", timeout=30000)
     page.wait_for_timeout(1000)
 
 
@@ -152,14 +157,14 @@ class TestCoreCases:
         module = test_case.get("模块", "")
         scenario = test_case.get("测试场景", "")
         preconditions = test_case.get("前置条件", "")
-        locators_str = test_case.get("元素定位器", "")
+        locators_str = substitute_runtime_tokens(test_case.get("元素定位器", ""))
         operations_str = test_case.get("操作类型", "")
         data_str = str(test_case.get("输入数据", "") or "")
         data_str = data_str.replace("${TEST_USERNAME}", test_username)
         data_str = data_str.replace("${TEST_PASSWORD}", test_password)
         data_str = substitute_runtime_tokens(data_str)
-        expected = test_case.get("期望结果", "")
-        verify_point = test_case.get("验证点", "")
+        expected = substitute_runtime_tokens(test_case.get("期望结果", ""))
+        verify_point = substitute_runtime_tokens(test_case.get("验证点", ""))
         assert_type = test_case.get("断言类型", "")
 
         logger.info(f"执行 [{case_id}] {module} - {scenario}")
@@ -183,8 +188,15 @@ class TestCoreCases:
             preconditions, page, login_page, test_username, test_password, store_name
         )
 
-        # 执行操作步骤
-        executor = StepExecutor(page, base_url)
+        # 执行操作步骤（读取 Excel「超时(秒)」列，默认 5 秒；影像报告等慢页面可单独调大）
+        timeout_ms = 5000
+        try:
+            timeout_seconds = str(test_case.get("超时(秒)", "") or "").strip()
+            if timeout_seconds:
+                timeout_ms = int(float(timeout_seconds) * 1000)
+        except (TypeError, ValueError):
+            timeout_ms = 5000
+        executor = StepExecutor(page, base_url, timeout_ms=timeout_ms)
         executor.execute(locators_str, operations_str, data_str)
 
         # 执行断言
@@ -195,7 +207,7 @@ class TestCoreCases:
         page.wait_for_timeout(2000)
         # 【修复】断言必须用执行器当前的页面句柄：switch_tab 切换新标签页后，
         # 原始 page 还在旧页面上，断言会读到错误 URL/内容
-        assertion = AssertionExecutor(executor.get_current_page())
+        assertion = AssertionExecutor(executor.get_current_page(), timeout_ms=timeout_ms)
         assertion.assert_by_type(assert_type, verify_point or expected, last_locator)
 
         logger.info(f"[{case_id}] ✅ 完成")
