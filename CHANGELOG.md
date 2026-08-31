@@ -2,7 +2,7 @@
 
 本项目使用[Semantic Versioning](https://semver.org/lang/zh-CN/)管理版本。
 
-## [Unreleased]
+## [1.1.0] - 开发中
 
 ### 计划新增
 
