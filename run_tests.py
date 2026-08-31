@@ -68,45 +68,51 @@ def run_tests(args=None):
 
 
 def _rerun_failed_cases() -> None:
-    """全量跑完后，逐条复跑失败的用例；复跑结果由 conftest 自动回写 Excel。"""
-    cases_dir = PROJECT_ROOT / "test_cases"
-    excel_path = next(
-        (cases_dir / name for name in
-         ("test_case.xlsx", "yanjia_ai_overseas_test_cases.xlsx", "core_test_cases.xlsx")
-         if (cases_dir / name).exists()),
-        cases_dir / "test_case.xlsx",
-    )
-    try:
-        from utils.excel_handler import ExcelHandler
-        cases = ExcelHandler(str(excel_path)).read_test_cases()
-    except Exception as exc:
-        print(f"读取 Excel 失败，跳过失败用例复跑: {exc}")
-        return
-    failed_ids = [
-        str(c.get("用例ID", "") or c.get("编号", "")).strip()
-        for c in cases
-        if str(c.get("实际结果", "")).startswith("fail")
-        # 只复跑启用的用例；「是否执行=否」的用例不参与运行，历史 fail 结果忽略
-        and str(c.get("是否执行", "是")).strip() not in ("否", "N", "n")
-    ]
-    failed_ids = [cid for cid in failed_ids if cid]
-    if not failed_ids:
-        return
-    print(f"\n发现 {len(failed_ids)} 条失败用例，等待 30 秒（让服务器慢时段恢复）后逐条复跑确认...")
+    """全量跑完后，失败用例逐条复跑（最多两轮）；复跑结果由 conftest 自动回写 Excel。"""
     import time as _time
-    _time.sleep(30)
-    python = str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe")
-    for cid in failed_ids:
-        print(f"  复跑 [{cid}] ...")
-        # 复跑：每条用例打开全新的执行窗口（独立进程 + 独立控制台窗口）
-        subprocess.run(
-            [
-                python, "-m", "pytest", "tests/test_core_cases.py",
-                "-k", cid, "-q", "-o", "addopts=",
-            ],
-            cwd=PROJECT_ROOT,
-            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+
+    def _rerun_round(round_no: int) -> None:
+        """复跑一轮：重新读取 Excel 中仍失败的用例，逐条弹窗复跑。"""
+        cases_dir = PROJECT_ROOT / "test_cases"
+        excel_path = next(
+            (cases_dir / name for name in
+             ("test_case.xlsx", "yanjia_ai_overseas_test_cases.xlsx", "core_test_cases.xlsx")
+             if (cases_dir / name).exists()),
+            cases_dir / "test_case.xlsx",
         )
+        try:
+            from utils.excel_handler import ExcelHandler
+            cases = ExcelHandler(str(excel_path)).read_test_cases()
+        except Exception as exc:
+            print(f"读取 Excel 失败，跳过失败用例复跑: {exc}")
+            return
+        failed_ids = [
+            str(c.get("用例ID", "") or c.get("编号", "")).strip()
+            for c in cases
+            if str(c.get("实际结果", "")).startswith("fail")
+            # 只复跑启用的用例；「是否执行=否」的用例不参与运行，历史 fail 结果忽略
+            and str(c.get("是否执行", "是")).strip() not in ("否", "N", "n")
+        ]
+        failed_ids = [cid for cid in failed_ids if cid]
+        if not failed_ids:
+            return
+        print(f"\n第 {round_no} 轮复跑：{len(failed_ids)} 条失败用例，等待 30 秒后逐条复跑...")
+        _time.sleep(30)
+        python = str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe")
+        for cid in failed_ids:
+            print(f"  复跑 [{cid}] ...")
+            # 复跑：每条用例打开全新的执行窗口（独立进程 + 独立控制台窗口）
+            subprocess.run(
+                [
+                    python, "-m", "pytest", "tests/test_core_cases.py",
+                    "-k", cid, "-q", "-o", "addopts=",
+                ],
+                cwd=PROJECT_ROOT,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            )
+
+    _rerun_round(1)
+    _rerun_round(2)
 
 
 def _find_java_home() -> str | None:

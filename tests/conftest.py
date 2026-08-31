@@ -196,19 +196,34 @@ def clean_auth_state(auth_state_file):
             logger.info("测试结束，已删除登录状态缓存")
 
 
+@pytest.fixture(scope="session")
+def browser_type_launch_args(browser_type_launch_args):
+    """
+    测试环境影像阅览页依赖内网 HTTP 影像服务器（192.168.10.168:8080），
+    HTTPS 页面加载 http 影像会触发混合内容/CORS 拦截导致阅览页渲染失败，
+    测试浏览器需禁用安全策略（仅测试环境使用）。
+    """
+    args = dict(browser_type_launch_args)
+    args.setdefault("args", []).extend(
+        ["--disable-web-security", "--allow-running-insecure-content"]
+    )
+    return args
+
+
 @pytest.fixture(scope="function")
 def browser_context_args(request, auth_state_file):
     """
-    覆写 playwright 的 browser_context_args 注入已保存的登录状态。
+    覆写 playwright 的 browser_context_args，固定中文环境并注入已保存的登录状态。
     首个「已登录」用例会执行真实登录并保存 state，后续用例自动复用。
     """
+    context_args = {"locale": "zh-CN"}
     test_case_data = _case_data_from_item(request.node)
     preconditions = str((test_case_data or {}).get("前置条件", ""))
     requires_blank_context = "打开登录" in preconditions or "未登录" in preconditions
     if auth_state_file.exists() and not requires_blank_context:
         logger.info("▸ 复用已保存的登录状态，跳过登录流程")
-        return {"storage_state": str(auth_state_file)}
-    return {}
+        context_args["storage_state"] = str(auth_state_file)
+    return context_args
 
 
 # ==================== 公共登录 fixture（测试隔离）====================

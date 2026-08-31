@@ -2,6 +2,8 @@
 
 > 基于 Playwright + pytest + Allure 的数据驱动自动化测试框架。
 > **不需要编程知识**，只需编辑 Excel 即可新增/修改测试用例。
+>
+> 当前版本：`v1.0.0`；版本变更见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [RELEASE.md](RELEASE.md)。
 
 ---
 
@@ -225,3 +227,5 @@ winget install Allure.Allure
 | [test_case_writing_guide.md](test_case_writing_guide.md) | ★ **必读** 用例编写完整规范 |
 | [test_cases/test_case.xlsx](test_cases/test_case.xlsx) | 测试用例文件（实际编辑这个） |
 | [generate_allure_report.bat](generate_allure_report.bat) | 单独生成 Allure 报告（已安装 Allure 时使用） |
+| [CHANGELOG.md](CHANGELOG.md) | 版本更新记录 |
+| [RELEASE.md](RELEASE.md) | 分支、Excel 安全和发布规范 |

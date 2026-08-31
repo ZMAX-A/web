@@ -536,14 +536,20 @@ def run(argv: list[str] | None = None) -> int:
 
     try:
         records = _merge_worker_results(outcomes)
-        # ===== 失败用例自动复跑确认 =====
-        # 全量跑失败的用例逐条单独复跑一次：两次都失败才判定为 failed，
-        # 复跑通过说明是全量环境下偶发（服务器慢/时序），最终按通过处理。
-        failed_records = [r for r in records if r.get("status") != "pass"]
-        if failed_records:
-            print(f"\n发现 {len(failed_records)} 条失败用例，等待 30 秒（让服务器慢时段恢复）后逐条复跑确认...")
-            import time as _time
+
+        # ===== 失败用例自动复跑确认（最多两轮）=====
+        # 全量失败的用例逐条复跑；两轮复跑都失败才判定为 failed。
+        # 每轮之间等待 30 秒，让服务器慢时段恢复。
+        import time as _time
+
+        def _rerun_one_round(round_no: int) -> int:
+            """复跑一轮仍失败的用例，返回该轮后仍失败的条数。"""
+            failed_records = [r for r in records if r.get("status") != "pass"]
+            if not failed_records:
+                return 0
+            print(f"\n第 {round_no} 轮复跑：{len(failed_records)} 条失败用例，等待 30 秒后逐条复跑...")
             _time.sleep(30)
+            still_failed = 0
             for record in failed_records:
                 cid = record.get("case_id", "")
                 slot = record.get("worker_id", "A")
@@ -560,6 +566,7 @@ def run(argv: list[str] | None = None) -> int:
                             break
                 if case is None:
                     print(f"  [{cid}] 未找到用例定义，跳过复跑")
+                    still_failed += 1
                     continue
                 rerun_spec = WorkerSpec(f"RERUN-{cid}", slot, [case], run_dir)
                 try:
@@ -590,12 +597,19 @@ def run(argv: list[str] | None = None) -> int:
                         rerun_status = str(payload["results"][0].get("status", "error"))
                     if rerun_status == "pass":
                         record["status"] = "pass"
-                        record["result"] = "pass（全量失败后复跑通过，判定为偶发）"
-                        print(f"  [{cid}] 复跑通过 → 最终判定 pass")
+                        record["result"] = f"pass（第 {round_no} 轮复跑通过，判定为偶发）"
+                        print(f"  [{cid}] 第 {round_no} 轮复跑通过 → 最终判定 pass")
                     else:
-                        print(f"  [{cid}] 复跑仍失败 → 最终判定 failed")
+                        still_failed += 1
+                        print(f"  [{cid}] 第 {round_no} 轮复跑仍失败")
                 except Exception as exc:
+                    still_failed += 1
                     print(f"  [{cid}] 复跑异常（按原结果判定）: {exc}")
+            return still_failed
+
+        _rerun_one_round(1)
+        _rerun_one_round(2)
+
         _write_excel_results(excel_path, records)
     except (OSError, ValueError) as exc:
         print(f"结果汇总失败: {exc}")

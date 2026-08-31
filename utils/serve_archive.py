@@ -46,6 +46,21 @@ def main() -> int:
     os.chdir(str(target))
     socketserver.TCPServer.allow_reuse_address = True
 
+    # 杀掉占用 8891 的旧归档服务：多次运行叠加会导致浏览器随机连到旧服务
+    try:
+        import subprocess
+        subprocess.run(
+            [
+                "powershell", "-NoProfile", "-Command",
+                "Get-NetTCPConnection -LocalPort 8891 -State Listen -ErrorAction SilentlyContinue "
+                "| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        pass
+
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, fmt, *args):
             pass
