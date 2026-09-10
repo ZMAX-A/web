@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,7 +17,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: testops-release-${{ github.ref }}
+  group: testops-release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -22,6 +28,7 @@ env:
   BASELINE_WORKSHEET: 自动化测试用例
   PACKAGE_NAME: yanjia-web-pytest
   IMAGE_REPOSITORY: ghcr.io/zmax-a/web
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   release:
@@ -31,6 +38,7 @@ jobs:
       - name: Check out Web release tag
         uses: actions/checkout@v6.0.2
         with:
+          ref: ${{ inputs.release_tag || github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -53,11 +61,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          release_version="${GITHUB_REF_NAME#v}"
-          test "v${release_version}" = "${GITHUB_REF_NAME}"
+          release_version="${RELEASE_TAG#v}"
+          test "v${release_version}" = "${RELEASE_TAG}"
           repository_version="$(tr -d '[:space:]' < VERSION)"
           test "${release_version}" = "${repository_version}" || {
-            echo "Git tag ${GITHUB_REF_NAME} does not match VERSION=${repository_version}." >&2
+            echo "Git tag ${RELEASE_TAG} does not match VERSION=${repository_version}." >&2
             exit 1
           }
           baseline_version="$(tr -d '[:space:]' < TESTOPS_BASELINE_VERSION)"
@@ -65,7 +73,7 @@ jobs:
             echo "TESTOPS_BASELINE_VERSION has an invalid value: ${baseline_version}." >&2
             exit 1
           }
-          source_revision="$(git rev-list -n 1 "${GITHUB_REF_NAME}")"
+          source_revision="$(git rev-list -n 1 "${RELEASE_TAG}")"
           test "${#source_revision}" -eq 40
           echo "RELEASE_VERSION=${release_version}" >> "${GITHUB_ENV}"
           echo "BASELINE_VERSION=${baseline_version}" >> "${GITHUB_ENV}"
@@ -142,7 +150,7 @@ jobs:
               --baseline "${RUNNER_TEMP}/testops-baseline/case-baseline.json" \
               --baseline-manifest "${RUNNER_TEMP}/testops-baseline/manifest.json" \
               --repository-url "https://github.com/${GITHUB_REPOSITORY}" \
-              --tag "${GITHUB_REF_NAME}" \
+              --tag "${RELEASE_TAG}" \
               --revision "${SOURCE_REVISION}" \
               --package-name "${PACKAGE_NAME}" \
               --package-version "${RELEASE_VERSION}" \
@@ -162,11 +170,11 @@ jobs:
             "${RUNNER_TEMP}/testops-baseline/migration-audit.json"
             "${RUNNER_TEMP}/testops-baseline/manifest.json"
           )
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} already exists; refusing to replace immutable assets." >&2
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists; refusing to replace immutable assets." >&2
             exit 1
           fi
-          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+          gh release create "${RELEASE_TAG}" "${assets[@]}" \
             --verify-tag \
-            --title "TestOps ${GITHUB_REF_NAME}" \
+            --title "TestOps ${RELEASE_TAG}" \
             --notes "Immutable TestOps Web Runner image and normalized Excel case baseline."
