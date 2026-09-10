@@ -76,6 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check "pydantic>=2.10,<3"
           python -m pytest unit_tests -q -o addopts=
           PYTHONPATH=".testops-platform/packages/contracts/src:.testops-platform/packages/migrations/src" \
             python -m testops.migrations.cli \
