@@ -12,6 +12,7 @@ import os
 import sys
 import json
 import logging
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -53,6 +54,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("pytest_conftest")
+
+_VISUAL_STEP_REFERENCE = re.compile(
+    r"\b(step_([0-9]{3})_[A-Za-z0-9_-]+[.]png)\b"
+)
 
 # ==================== 加载环境变量 ====================
 load_dotenv()
@@ -284,6 +289,26 @@ def _case_data_from_item(item) -> dict | None:
     return item.callspec.params.get("test_case")
 
 
+def _report_failure_reason(report) -> str:
+    """优先读取 pytest 的异常摘要，避免长 traceback 截断掉真正失败原因。"""
+    longrepr = getattr(report, "longrepr", None)
+    crash = getattr(longrepr, "reprcrash", None)
+    message = getattr(crash, "message", None)
+    return str(message or longrepr or "未知失败")
+
+
+def _visual_failure_note(reason: str) -> str:
+    """把视觉失败引用转换成适合 Excel 备注的步骤列表。"""
+    steps: list[str] = []
+    seen: set[str] = set()
+    for filename, number in _VISUAL_STEP_REFERENCE.findall(str(reason or "")):
+        if filename in seen:
+            continue
+        seen.add(filename)
+        steps.append(f"步骤{int(number)}（{filename}）")
+    return "、".join(steps)
+
+
 @pytest.fixture(autouse=True)
 def auto_result_handler(request, page):
     """设置 Allure 标签，并在 setup/call 失败时保存现场截图。"""
@@ -314,7 +339,7 @@ def auto_result_handler(request, page):
         return
 
     case_id = test_case_data.get("用例ID", "") or test_case_data.get("编号", "") or request.node.name
-    fail_reason = str(failed_report.longrepr)[:300] if failed_report.longrepr else "未知失败"
+    fail_reason = _report_failure_reason(failed_report)[:300]
     try:
         page.title()  # 页面上下文关闭时会在这里失败，避免重复报错。
         screenshot_bytes = page.screenshot(full_page=True)
@@ -345,7 +370,7 @@ def auto_result_handler(request, page):
 
 def pytest_sessionfinish(session, exitstatus):
     """收集最终结果；Worker 写 JSON，传统单进程仍一次性回写 Excel。"""
-    updates: list[tuple[str, str, int | None]] = []
+    updates: list[tuple[str, str, int | None, str]] = []
     result_records: list[dict] = []
     collected_case_ids: list[str] = []
     for item in session.items:
@@ -366,9 +391,12 @@ def pytest_sessionfinish(session, exitstatus):
         failed_report = next((report for report in reports if report and report.failed), None)
         skipped_report = next((report for report in reports if report and report.skipped), None)
         call_report = getattr(item, "rep_call", None)
+        failure_note = ""
         if failed_report:
-            reason = str(failed_report.longrepr)[:300] if failed_report.longrepr else "未知失败"
+            full_reason = _report_failure_reason(failed_report)
+            reason = full_reason[:300]
             result = f"fail: {reason}"
+            failure_note = _visual_failure_note(full_reason)
         elif skipped_report:
             reason = str(skipped_report.longrepr)[:200] if skipped_report.longrepr else "跳过"
             result = f"skip: {reason}"
@@ -377,8 +405,8 @@ def pytest_sessionfinish(session, exitstatus):
         else:
             result = "fail: 用例未进入执行阶段"
         row_num = test_case_data.get("_row")
-        updates.append((case_id, result, row_num))
-        result_records.append({
+        updates.append((case_id, result, row_num, failure_note))
+        result_record = {
             "case_id": case_id,
             "status": result.split(":", 1)[0],
             "result": result,
@@ -388,7 +416,10 @@ def pytest_sessionfinish(session, exitstatus):
                 for report in reports
                 if report and getattr(report, "duration", None) is not None
             ), 3),
-        })
+        }
+        if failure_note:
+            result_record["failure_note"] = failure_note
+        result_records.append(result_record)
 
     try:
         worker_result_file = result_file_path()

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vision Eval"
+  short_description: "Measure visual-model accuracy and baseline stability"
+  default_prompt: "Use $vision-eval to validate the visual evaluation dataset and measure the current model."

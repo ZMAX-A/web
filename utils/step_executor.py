@@ -12,6 +12,9 @@
 - download 下载文件
 - wait    等待
 - nav     导航到URL
+- set_viewport 固定视觉用例视口尺寸
+- wait_hidden 等待加载提示或遮罩消失
+- vision_compare_step 立即按步骤标准图比较红框区域
 
 Allure 集成：
 - 每一步操作在 Allure 报告中显示为嵌套步骤
@@ -20,6 +23,8 @@ import re
 import logging
 import allure
 from playwright.sync_api import Page, TimeoutError as PwTimeout
+
+from utils.vision_harness import VisionAssertionMismatch, VisionHarness
 
 logger = logging.getLogger("step_executor")
 
@@ -31,9 +36,20 @@ class StepExecutionError(RuntimeError):
 class StepExecutor:
     """执行 Excel 中定义的测试步骤"""
 
-    def __init__(self, page: Page, base_url: str = "", timeout_ms: int = 5000):
+    def __init__(
+        self,
+        page: Page,
+        base_url: str = "",
+        timeout_ms: int = 5000,
+        case_id: str = "",
+        vision_harness: VisionHarness | None = None,
+    ):
         self.page = page
         self.timeout_ms = max(int(timeout_ms), 1)
+        self.case_id = str(case_id or "").strip()
+        self._vision_harness = vision_harness
+        self.vision_step_count = 0
+        self.vision_step_failures: list[str] = []
         # 提取纯域名作为 base_url（去掉 /login 等路径部分）
         _m = re.match(r"(https?://[^/]+)", base_url)
         self.base_url = _m.group(1) if _m else base_url.rstrip("/")
@@ -90,6 +106,10 @@ class StepExecutor:
                 if seconds < 0:
                     raise self._step_error("wait", locator, "等待时间不能为负数")
                 self.page.wait_for_timeout(round(seconds * 1000))
+            elif operation == "set_viewport":
+                self._do_set_viewport(locator)
+            elif operation == "wait_hidden":
+                self._do_wait_hidden(locator)
             elif operation == "nav":
                 data_target = data_parts[data_idx] if data_idx < len(data_parts) else ""
                 data_idx += 1
@@ -118,8 +138,67 @@ class StepExecutor:
                 self._do_switch_tab(locator)
             elif operation == "retry_report":
                 self._do_retry_report(locator)
+            elif operation == "vision_compare_step":
+                reference_key = data_parts[data_idx] if data_idx < len(data_parts) else ""
+                data_idx += 1
+                self._do_vision_compare_step(locator, reference_key)
             else:
                 raise self._step_error(operation or "<空操作>", locator, "不支持的操作类型")
+
+    @allure.step("步骤视觉基线比较: {reference_key}")
+    def _do_vision_compare_step(self, locator: str, reference_key: str) -> None:
+        """在操作序列中立即截图并比较，保证中间状态不会被后续点击覆盖。"""
+        if not locator:
+            raise self._step_error("vision_compare_step", locator, "缺少截图定位器")
+        if not reference_key:
+            raise self._step_error("vision_compare_step", locator, "缺少步骤标准图引用")
+        harness = self._vision_harness
+        if harness is None:
+            harness = VisionHarness(
+                self.get_current_page(),
+                timeout_ms=self.timeout_ms,
+                case_id=self.case_id,
+            )
+            self._vision_harness = harness
+        else:
+            harness.page = self.get_current_page()
+        try:
+            harness.assert_step_reference(reference_key, locator)
+        except VisionAssertionMismatch as exc:
+            # 有效的模型观察已完成，只是界面与标准图不一致。记录后继续，
+            # 让同一用例的后续步骤也能得到结论；服务/截图/契约错误仍立即失败。
+            self.vision_step_count += 1
+            failure = f"{reference_key}: {exc}"
+            self.vision_step_failures.append(failure)
+            logger.warning("  ❌ 已记录步骤视觉不一致并继续: %s", failure)
+        else:
+            self.vision_step_count += 1
+
+    @allure.step("固定浏览器视口: {size}")
+    def _do_set_viewport(self, size: str) -> None:
+        match = re.fullmatch(r"\s*(\d+)\s*[xX×]\s*(\d+)\s*", str(size or ""))
+        if not match:
+            raise self._step_error("set_viewport", size, "尺寸格式必须为 宽x高，例如 2561x1398")
+        width, height = (int(value) for value in match.groups())
+        if width < 320 or height < 240 or width > 10000 or height > 10000:
+            raise self._step_error("set_viewport", size, "视口尺寸超出允许范围")
+        try:
+            self.get_current_page().set_viewport_size({"width": width, "height": height})
+            self.get_current_page().wait_for_timeout(500)
+        except Exception as exc:
+            raise self._step_error("set_viewport", size, str(exc)) from exc
+
+    @allure.step("等待元素消失: {locator}")
+    def _do_wait_hidden(self, locator: str) -> None:
+        if not locator:
+            raise self._step_error("wait_hidden", locator, "缺少定位器")
+        try:
+            self.get_current_page().locator(locator).first.wait_for(
+                state="hidden",
+                timeout=self.timeout_ms,
+            )
+        except Exception as exc:
+            raise self._step_error("wait_hidden", locator, str(exc)) from exc
     @allure.step("输入文本 → {locator}")
     def _do_input(self, locator: str, text: str, press_enter: bool = False) -> None:
         """输入文本，短暂重试后仍失败则终止当前用例。"""

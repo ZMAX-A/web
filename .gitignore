@@ -3,11 +3,8 @@
 venv/
 env/
 
-# Allure 测试报告
-reports/allure-results/
-reports/allure-report/
-reports/history/
-reports/runs/
+# 本地测试报告、截图和 pytest 临时目录
+reports/
 
 # 本地生成与检查产物
 outputs/
@@ -15,6 +12,10 @@ outputs/
 
 # 测试截图
 screenshots/
+
+# 私有视觉基线与标注集（公开仓库不得提交真实人脸或客户影像）
+test_assets/vision_baselines/*/
+test_assets/vision_eval/cases.jsonl
 
 # 环境变量（含敏感信息）
 .env

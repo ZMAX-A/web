@@ -19,7 +19,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from utils.case_validator import CaseValidationError, validate_cases
+from utils.case_validator import CaseValidationError, is_visual_assertion, validate_cases
 from utils.excel_handler import ExcelHandler
 from utils.parallel_execution import assign_case_groups, case_id, is_case_enabled
 
@@ -308,7 +308,12 @@ def _merge_worker_results(outcomes: list[WorkerOutcome]) -> list[dict]:
 
 def _write_excel_results(excel_path: Path, records: list[dict]) -> None:
     updates = [
-        (record["case_id"], str(record["result"]), record.get("row"))
+        (
+            record["case_id"],
+            str(record["result"]),
+            record.get("row"),
+            str(record.get("failure_note", "")),
+        )
         for record in records
     ]
     if updates:
@@ -566,6 +571,13 @@ def run(argv: list[str] | None = None) -> int:
                             break
                 if case is None:
                     print(f"  [{cid}] 未找到用例定义，跳过复跑")
+                    still_failed += 1
+                    continue
+                allow_visual_reruns = os.getenv("VISION_RERUN_FAILURES", "false").strip().lower() in {
+                    "1", "true", "yes", "on", "是",
+                }
+                if is_visual_assertion(case) and not allow_visual_reruns:
+                    print(f"  [{cid}] 视觉断言失败默认不自动复跑改判，保留原失败结论")
                     still_failed += 1
                     continue
                 rerun_spec = WorkerSpec(f"RERUN-{cid}", slot, [case], run_dir)

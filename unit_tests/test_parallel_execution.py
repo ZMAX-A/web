@@ -170,3 +170,42 @@ def test_pytest_worker_writes_json_instead_of_excel(monkeypatch, tmp_path: Path)
         "row": 7,
         "duration": 1.25,
     }]
+
+
+def test_pytest_worker_records_failed_visual_step_for_excel_note(monkeypatch, tmp_path: Path):
+    from tests import conftest
+
+    result_file = tmp_path / "worker_A" / "results_A.json"
+    monkeypatch.setenv("TEST_WORKER_ID", "A")
+    monkeypatch.setenv("TEST_ACCOUNT_SLOT", "A")
+    monkeypatch.setenv("TEST_RUN_ID", "RUN-VISUAL-FAIL")
+    monkeypatch.setenv("TEST_RESULT_FILE", str(result_file))
+    message = (
+        "AssertionError: 步骤视觉比较存在 1 个不一致：\n"
+        "- TC-IMAGE-006/step_013_FenPing.png: 布局=mismatch"
+    )
+    longrepr = SimpleNamespace(reprcrash=SimpleNamespace(message=message))
+    report = SimpleNamespace(
+        failed=True,
+        skipped=False,
+        passed=False,
+        duration=2.5,
+        longrepr=longrepr,
+    )
+    item = SimpleNamespace(
+        callspec=SimpleNamespace(params={
+            "test_case": {"用例ID": "TC-IMAGE-042", "_row": 99},
+        }),
+        rep_call=report,
+    )
+    session = SimpleNamespace(
+        items=[item],
+        config=SimpleNamespace(option=SimpleNamespace(collectonly=False)),
+    )
+
+    conftest.pytest_sessionfinish(session, 1)
+
+    payload = json.loads(result_file.read_text(encoding="utf-8"))
+    assert payload["results"][0]["failure_note"] == (
+        "步骤13（step_013_FenPing.png）"
+    )

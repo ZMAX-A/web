@@ -1,6 +1,7 @@
 """Excel 用例静态校验：在启动浏览器前发现拼写和步骤配置问题。"""
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from utils.parallel_execution import normalize_execution_group
@@ -9,7 +10,7 @@ from utils.parallel_execution import normalize_execution_group
 SUPPORTED_OPERATIONS = {
     "input", "input_enter", "click", "select", "verify", "hover", "scroll", "wait", "nav",
     "find_click", "upload", "daterange", "date_range", "switch_tab",
-    "retry_report",
+    "retry_report", "set_viewport", "wait_hidden", "vision_compare_step",
 }
 SUPPORTED_ASSERTIONS = {
     "text_equals", "text_contains", "text_visible", "text_hidden", "text_not_empty",
@@ -18,19 +19,31 @@ SUPPORTED_ASSERTIONS = {
     "url_matches", "empty_list", "list_contains", "date_in_range",
     "value_in_range", "file_verify", "age_in_range", "date_format",
     "text_optional",
+    "vision_contains", "vision_count", "vision_page_state", "vision_canvas_ready",
+    "vision_compare_reference", "vision_step_sequence",
 }
 ASSERTION_ALIASES = {"visible_text": "text_visible"}
 OPERATIONS_REQUIRING_LOCATOR = {
     "input", "input_enter", "click", "select", "verify", "hover", "find_click", "upload",
-    "daterange", "date_range", "retry_report",
+    "daterange", "date_range", "retry_report", "set_viewport", "wait_hidden",
+    "vision_compare_step",
 }
 ASSERTIONS_REQUIRING_LOCATOR = {
     "text_not_empty", "value_equals", "element_visible", "element_disabled", "element_count",
     "attr_equals",
     "list_contains", "date_in_range", "value_in_range", "date_format",
     "text_optional",
+    "vision_contains", "vision_count", "vision_page_state", "vision_canvas_ready",
+    "vision_compare_reference",
 }
-DATA_OPERATIONS = {"input", "input_enter", "select", "nav", "upload", "daterange", "date_range"}
+VISION_ASSERTIONS = {
+    "vision_contains", "vision_count", "vision_page_state", "vision_canvas_ready",
+    "vision_compare_reference", "vision_step_sequence",
+}
+DATA_OPERATIONS = {
+    "input", "input_enter", "select", "nav", "upload", "daterange", "date_range",
+    "vision_compare_step",
+}
 
 
 class CaseValidationError(ValueError):
@@ -39,6 +52,13 @@ class CaseValidationError(ValueError):
 
 def _text(value: object) -> str:
     return "" if value is None else str(value).strip()
+
+
+def is_visual_assertion(case: dict) -> bool:
+    """供调度器识别视觉用例；默认不允许模型不一致被自动复跑改判。"""
+    assert_type = ASSERTION_ALIASES.get(_text(case.get("断言类型")), _text(case.get("断言类型")))
+    operations = {_text(item) for item in _text(case.get("操作类型")).split(",")}
+    return assert_type in VISION_ASSERTIONS or "vision_compare_step" in operations
 
 
 def validate_cases(cases: Iterable[dict]) -> None:
@@ -108,6 +128,12 @@ def validate_cases(cases: Iterable[dict]) -> None:
                         raise ValueError
                 except ValueError:
                     errors.append(f"{prefix}: wait 定位器必须是非负秒数，实际为「{locator}」")
+            if operation == "set_viewport" and not re.fullmatch(
+                r"\s*\d+\s*[xX×]\s*\d+\s*", locator
+            ):
+                errors.append(
+                    f"{prefix}: set_viewport 定位器必须为 宽x高，实际为「{locator}」"
+                )
 
             data_value = data_parts[data_index] if data_index < len(data_parts) else ""
             if operation in DATA_OPERATIONS:
@@ -116,6 +142,8 @@ def validate_cases(cases: Iterable[dict]) -> None:
                 errors.append(f"{prefix}: nav 缺少 URL（定位器和输入数据均为空）")
             if operation in {"upload", "daterange", "date_range"} and not data_value:
                 errors.append(f"{prefix}: 操作「{operation}」缺少输入数据")
+            if operation == "vision_compare_step" and not data_value:
+                errors.append(f"{prefix}: 操作「vision_compare_step」缺少步骤标准图引用")
 
         assert_type = _text(case.get("断言类型"))
         assert_type = ASSERTION_ALIASES.get(assert_type, assert_type)
@@ -124,10 +152,20 @@ def validate_cases(cases: Iterable[dict]) -> None:
         elif assert_type not in SUPPORTED_ASSERTIONS:
             errors.append(f"{prefix}: 不支持的断言类型「{assert_type}」")
 
-        assertion_locator = _text(case.get("断言定位器"))
-        if not assertion_locator:
+        explicit_assertion_locator = _text(case.get("断言定位器"))
+        assertion_locator = explicit_assertion_locator
+        if not assertion_locator and assert_type not in VISION_ASSERTIONS:
             assertion_locator = next((item for item in reversed(locators) if item), "")
-        if assert_type in ASSERTIONS_REQUIRING_LOCATOR and not assertion_locator:
+        if (
+            assert_type in VISION_ASSERTIONS
+            and assert_type in ASSERTIONS_REQUIRING_LOCATOR
+            and not explicit_assertion_locator
+        ):
+            errors.append(
+                f"{prefix}: 视觉断言必须填写独立的「断言定位器」，"
+                "用于最小区域截图和客户信息隔离"
+            )
+        elif assert_type in ASSERTIONS_REQUIRING_LOCATOR and not assertion_locator:
             errors.append(f"{prefix}: 断言「{assert_type}」缺少定位器")
 
         timeout = _text(case.get("超时(秒)"))

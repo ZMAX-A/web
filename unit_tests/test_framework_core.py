@@ -7,6 +7,7 @@ from utils.assertion_executor import AssertionExecutor
 from utils.case_validator import CaseValidationError, validate_cases
 from utils.excel_handler import ExcelHandler
 from utils.step_executor import StepExecutionError, StepExecutor
+from utils.vision_harness import VisionAssertionMismatch, VisionHarnessError
 
 
 class WaitPage:
@@ -17,10 +18,115 @@ class WaitPage:
         self.waited.append(milliseconds)
 
 
+class ViewportAndHiddenPage(WaitPage):
+    def __init__(self):
+        super().__init__()
+        self.viewport = None
+        self.hidden_wait = None
+
+    def set_viewport_size(self, size):
+        self.viewport = size
+
+    def locator(self, _locator):
+        return self
+
+    @property
+    def first(self):
+        return self
+
+    def wait_for(self, **kwargs):
+        self.hidden_wait = kwargs
+
+
 def test_fractional_wait_uses_milliseconds():
     page = WaitPage()
     StepExecutor(page).execute("0.5", "wait", "")
     assert page.waited == [500]
+
+
+def test_visual_viewport_and_loading_wait_are_explicit_steps():
+    page = ViewportAndHiddenPage()
+    StepExecutor(page, timeout_ms=60000).execute(
+        "2561x1398,text=正在努力下载资源",
+        "set_viewport,wait_hidden",
+        "",
+    )
+    assert page.viewport == {"width": 2561, "height": 1398}
+    assert page.waited == [500]
+    assert page.hidden_wait == {"state": "hidden", "timeout": 60000}
+
+
+def test_step_visual_compare_runs_in_sequence_and_preserves_explicit_wait():
+    class FakeVisionHarness:
+        def __init__(self):
+            self.calls = []
+
+        def assert_step_reference(self, reference_key, locator):
+            self.calls.append((reference_key, locator))
+            return True
+
+    page = WaitPage()
+    vision = FakeVisionHarness()
+    executor = StepExecutor(page, case_id="TC-IMAGE-042", vision_harness=vision)
+    executor.execute(
+        "body,1,body",
+        "vision_compare_step,wait,vision_compare_step",
+        "TC-IMAGE-006/step_013_FenPing.png|TC-IMAGE-006/step_014_JingXiang.png",
+    )
+
+    assert page.waited == [1000]
+    assert vision.calls == [
+        ("TC-IMAGE-006/step_013_FenPing.png", "body"),
+        ("TC-IMAGE-006/step_014_JingXiang.png", "body"),
+    ]
+    assert executor.vision_step_count == 2
+    assert executor.vision_step_failures == []
+
+
+def test_step_visual_mismatch_is_collected_and_later_steps_continue():
+    class FakeVisionHarness:
+        def __init__(self):
+            self.calls = []
+
+        def assert_step_reference(self, reference_key, locator):
+            self.calls.append((reference_key, locator))
+            if reference_key == "TC-IMAGE-006/step_005_ChongZhi.png":
+                raise VisionAssertionMismatch("关键布局不一致")
+            return True
+
+    vision = FakeVisionHarness()
+    executor = StepExecutor(WaitPage(), case_id="TC-IMAGE-042", vision_harness=vision)
+    executor.execute(
+        "body,body",
+        "vision_compare_step,vision_compare_step",
+        "TC-IMAGE-006/step_005_ChongZhi.png|TC-IMAGE-006/step_006_GuanBiao.png",
+    )
+
+    assert [call[0] for call in vision.calls] == [
+        "TC-IMAGE-006/step_005_ChongZhi.png",
+        "TC-IMAGE-006/step_006_GuanBiao.png",
+    ]
+    assert executor.vision_step_count == 2
+    assert len(executor.vision_step_failures) == 1
+    assert "step_005_ChongZhi.png" in executor.vision_step_failures[0]
+
+
+def test_step_visual_infrastructure_error_still_stops_immediately():
+    class BrokenVisionHarness:
+        def assert_step_reference(self, _reference_key, _locator):
+            raise VisionHarnessError("模型服务不可用")
+
+    executor = StepExecutor(
+        WaitPage(), case_id="TC-IMAGE-042", vision_harness=BrokenVisionHarness()
+    )
+    with pytest.raises(VisionHarnessError, match="模型服务不可用"):
+        executor.execute(
+            "body,body",
+            "vision_compare_step,vision_compare_step",
+            "TC-IMAGE-006/step_005_ChongZhi.png|TC-IMAGE-006/step_006_GuanBiao.png",
+        )
+    assert executor.vision_step_count == 0
+    assert executor.vision_step_failures == []
 
 
 def test_unknown_operation_fails_instead_of_passing():
@@ -94,6 +200,25 @@ def test_date_range_parser_supports_slash_and_iso_dates():
 def test_unknown_assertion_fails_instead_of_passing():
     with pytest.raises(AssertionError, match="未知断言类型"):
         AssertionExecutor(None).assert_by_type("visible_tex", "任意文本")
+
+
+def test_vision_step_sequence_requires_all_expected_comparisons():
+    assert (
+        AssertionExecutor(None, vision_step_count=10).assert_by_type(
+            "vision_step_sequence", "共10次步骤视觉比较"
+        )
+        is True
+    )
+    with pytest.raises(AssertionError, match="期望 10，实际 9"):
+        AssertionExecutor(None, vision_step_count=9).assert_by_type(
+            "vision_step_sequence", "10"
+        )
+    with pytest.raises(AssertionError, match="存在 1 个不一致"):
+        AssertionExecutor(
+            None,
+            vision_step_count=10,
+            vision_step_failures=["step_006_GuanBiao.png: 关键布局不一致"],
+        ).assert_by_type("vision_step_sequence", "10")
 
 
 def test_visible_text_alias_uses_real_text_assertion():
@@ -176,3 +301,54 @@ def test_excel_reader_keeps_real_rows_and_batch_writes(tmp_path: Path):
     assert sheet.cell(4, 3).fill.start_color.rgb == "FFFFC7CE"
     assert sheet.cell(2, 3).fill.start_color.rgb != "FFFFC7CE"
     workbook.close()
+
+
+def test_excel_result_writes_visual_failure_step_to_note_and_clears_it_on_pass(
+    tmp_path: Path,
+):
+    path = tmp_path / "visual-cases.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "自动化测试用例"
+    sheet.append(["用例ID", "备注", "实际结果"])
+    sheet.append(["TC-IMAGE-042", "标准图只读", ""])
+    workbook.save(path)
+    workbook.close()
+
+    handler = ExcelHandler(str(path))
+    handler.write_results([
+        (
+            "TC-IMAGE-042",
+            "fail: 视觉不一致",
+            2,
+            "步骤13（step_013_FenPing.png）、步骤14（step_014_JingXiang.png）",
+        )
+    ])
+    workbook = load_workbook(path, read_only=True)
+    sheet = workbook.active
+    assert sheet.cell(2, 2).value == (
+        "标准图只读\n【自动化失败步骤】"
+        "步骤13（step_013_FenPing.png）、步骤14（step_014_JingXiang.png）"
+    )
+    workbook.close()
+
+    handler.write_results([("TC-IMAGE-042", "pass", 2, "")])
+    workbook = load_workbook(path, read_only=True)
+    sheet = workbook.active
+    assert sheet.cell(2, 2).value == "标准图只读"
+    assert sheet.cell(2, 3).value == "pass"
+    workbook.close()
+
+
+def test_visual_failure_note_extracts_and_deduplicates_failed_steps():
+    from tests.conftest import _visual_failure_note
+
+    reason = (
+        "步骤视觉比较存在 2 个不一致：\n"
+        "- TC-IMAGE-006/step_013_FenPing.png: 布局=mismatch\n"
+        "- TC-IMAGE-006/step_014_JingXiang.png: 关键元素=mismatch\n"
+        "重复引用 step_013_FenPing.png"
+    )
+    assert _visual_failure_note(reason) == (
+        "步骤13（step_013_FenPing.png）、步骤14（step_014_JingXiang.png）"
+    )

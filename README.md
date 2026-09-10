@@ -39,7 +39,9 @@
 │   ├── excel_handler.py       ← Excel 读写与批量回写
 │   ├── case_validator.py      ← Excel 用例预校验
 │   ├── step_executor.py       ← 严格操作执行器
-│   └── assertion_executor.py  ← 严格断言执行器
+│   ├── assertion_executor.py  ← 严格断言执行器
+│   ├── vision_client.py       ← OpenAI 兼容视觉模型客户端
+│   └── vision_harness.py      ← 裁剪、结构校验、缓存和本地视觉判定
 │
 ├── unit_tests/                ← 离线框架回归测试
 ├── reports/                   ← 测试报告（自动生成）
@@ -91,11 +93,27 @@ STORE_NAME_B=
 
 打开 `test_cases/test_case.xlsx`，按以下格式填写新行：
 
-| 用例ID | 模块 | 测试场景 | 测试点 | 优先级 | 前置条件 | 操作类型 | 元素定位器 | 输入数据 | 断言类型 | 验证点 |
-|-------|------|---------|--------|-------|---------|---------|-----------|---------|---------|-------|
-| TC-LOGIN-002 | 账号登录 | 登录失败-错误密码 | 验证错误密码提示 | P0 | 打开登录页 | input,input,click,click | #username,#password,.ant-select-selector,button[type='submit'] | admin\|wrong123 | text_contains | '登录失败' |
+| 用例ID | 模块 | 测试场景 | 测试点 | 优先级 | 前置条件 | 操作类型 | 元素定位器 | 输入数据 | 断言类型 | 断言定位器 | 验证点 |
+|-------|------|---------|--------|-------|---------|---------|-----------|---------|---------|-------------|-------|
+| TC-LOGIN-002 | 账号登录 | 登录失败-错误密码 | 验证错误密码提示 | P0 | 打开登录页 | input,input,click,click | #username,#password,.ant-select-selector,button[type='submit'] | admin\|wrong123 | text_contains |  | '登录失败' |
 
 📖 **完整编写规范见 [test_case_writing_guide.md](test_case_writing_guide.md)**，里面包含详细的操作类型说明、断言类型说明、选择器写法示例。
+
+影像阅览页的 Canvas 内容可使用 `vision_contains`、`vision_count`、`vision_page_state`、`vision_canvas_ready` 和 `vision_compare_reference`。其中 `vision_compare_reference` 会根据当前用例 ID 自动读取 `test_assets/vision_baselines/<用例ID>/reference.png` 及 `reference.meta.json`，校验标准图哈希、尺寸、截图范围和人工批准状态，再在浏览器内存中生成“标准图在上、当前图在下”的单张对照图交给视觉模型；兼容单次只允许一张图片的网关，不需要运行时手动选择或拼接图片。视觉断言必须在 Excel 增加「断言定位器」并填写最小必要区域；默认不会把截图持久化到 Allure。需要逐步验证中间状态时，可在操作序列中使用 `vision_compare_step`；Harness 按 `steps.meta.json` 校验步骤标准图并把标准图、当前图裁成相同的红框内部区域，`vision_step_sequence` 再确认全部步骤比较均已执行。
+
+视觉模型准确率使用项目 Skill `.agents/skills/vision-eval` 和私有标注集 `test_assets/vision_eval/cases.jsonl` 评测。公开仓库不提交真实人脸标准图或对应标注集；需要先从受控私有存储提供脱敏或已获授权的数据。默认命令只进行离线数据门禁，不会调用模型：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_vision_eval.py
+```
+
+获得图片外发授权后，使用 `--run-model` 生成 `reports/vision-eval/<时间>/summary.json` 和 `records.csv`：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_vision_eval.py --run-model --repeat 3
+```
+
+内置的同图正样本只证明链路可用。至少准备 20 条同时包含正常与异常页面的人工标注样本后，才能用准确率、缺陷召回率和重复一致率比较模型或 Prompt 版本。
 
 ### 第 4 步：一键运行
 

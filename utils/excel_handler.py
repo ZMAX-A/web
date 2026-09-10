@@ -21,6 +21,7 @@ class ExcelHandler:
     # 新旧格式的列名标识
     NEW_FORMAT_ID_COL = "用例ID"      # 新版用"用例ID"
     OLD_FORMAT_ID_COL = "编号"        # 旧版用"编号"
+    FAILURE_NOTE_MARKER = "【自动化失败步骤】"
 
     def __init__(self, file_path: str):
         self.file_path = file_path
@@ -94,12 +95,24 @@ class ExcelHandler:
         for case in records:
             case["_row"] = int(case.pop("_excel_row"))
         return records
-    def write_result(self, case_id: str, result: str, row_num: int | None = None) -> None:
+    def write_result(
+        self,
+        case_id: str,
+        result: str,
+        row_num: int | None = None,
+        failure_note: str = "",
+    ) -> None:
         """写入单条结果；内部复用批量实现。"""
-        self.write_results([(case_id, result, row_num)])
+        self.write_results([(case_id, result, row_num, failure_note)])
 
-    def write_results(self, results: list[tuple[str, str, int | None]]) -> None:
-        """一次打开并保存 Excel，批量写入多条测试结果。"""
+    def write_results(
+        self,
+        results: list[
+            tuple[str, str, int | None]
+            | tuple[str, str, int | None, str]
+        ],
+    ) -> None:
+        """批量写入结果；失败步骤追加到备注，通过时清除旧运行标记。"""
         if not results:
             return
 
@@ -124,6 +137,7 @@ class ExcelHandler:
             if not result_column:
                 result_column = ws.max_column + 1
                 ws.cell(1, result_column).value = "实际结果"
+            note_column = headers.get("备注")
 
             row_by_id = {
                 str(ws.cell(row, id_column).value).strip(): row
@@ -134,7 +148,12 @@ class ExcelHandler:
             # 失败标红（浅红背景+深红加粗文字），通过/跳过重置样式，避免旧红色残留
             red_fill = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
             red_font = Font(color="FF9C0006", bold=True)
-            for case_id, result, row_num in results:
+            for update in results:
+                if len(update) == 3:
+                    case_id, result, row_num = update
+                    failure_note = ""
+                else:
+                    case_id, result, row_num, failure_note = update
                 target_row = int(row_num) if row_num else row_by_id.get(str(case_id).strip())
                 if not target_row or target_row < 2 or target_row > ws.max_row:
                     missing.append(str(case_id))
@@ -148,6 +167,17 @@ class ExcelHandler:
                 else:
                     cell.fill = PatternFill()
                     cell.font = Font()
+
+                if note_column:
+                    note_cell = ws.cell(target_row, note_column)
+                    original_note = str(note_cell.value or "")
+                    base_note = original_note.split(self.FAILURE_NOTE_MARKER, 1)[0].rstrip()
+                    runtime_note = str(failure_note or "").strip()
+                    if runtime_note:
+                        generated_note = f"{self.FAILURE_NOTE_MARKER}{runtime_note}"
+                        note_cell.value = f"{base_note}\n{generated_note}" if base_note else generated_note
+                    else:
+                        note_cell.value = base_note or None
 
             if missing:
                 raise ValueError(f"以下用例未找到对应 Excel 行: {', '.join(missing)}")

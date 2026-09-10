@@ -14,8 +14,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent
+load_dotenv(PROJECT_ROOT / ".env")
 
 def run_tests(args=None):
     """运行离线检查和 pytest E2E 测试。"""
@@ -82,16 +85,28 @@ def _rerun_failed_cases() -> None:
         )
         try:
             from utils.excel_handler import ExcelHandler
+            from utils.case_validator import is_visual_assertion
             cases = ExcelHandler(str(excel_path)).read_test_cases()
         except Exception as exc:
             print(f"读取 Excel 失败，跳过失败用例复跑: {exc}")
             return
-        failed_ids = [
-            str(c.get("用例ID", "") or c.get("编号", "")).strip()
-            for c in cases
+        failed_cases = [
+            c for c in cases
             if str(c.get("实际结果", "")).startswith("fail")
             # 只复跑启用的用例；「是否执行=否」的用例不参与运行，历史 fail 结果忽略
             and str(c.get("是否执行", "是")).strip() not in ("否", "N", "n")
+        ]
+        allow_visual_reruns = os.getenv("VISION_RERUN_FAILURES", "false").strip().lower() in {
+            "1", "true", "yes", "on", "是",
+        }
+        skipped_visual = [c for c in failed_cases if is_visual_assertion(c) and not allow_visual_reruns]
+        for case in skipped_visual:
+            cid = str(case.get("用例ID", "") or case.get("编号", "")).strip()
+            print(f"  [{cid}] 视觉断言失败默认不自动复跑改判，保留原失败结论")
+        failed_ids = [
+            str(c.get("用例ID", "") or c.get("编号", "")).strip()
+            for c in failed_cases
+            if c not in skipped_visual
         ]
         failed_ids = [cid for cid in failed_ids if cid]
         if not failed_ids:

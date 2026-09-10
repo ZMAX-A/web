@@ -10,6 +10,8 @@ from datetime import datetime
 import allure
 from playwright.sync_api import Page, expect
 
+from utils.vision_harness import VisionHarness
+
 logger = logging.getLogger("assertion_executor")
 
 
@@ -20,9 +22,22 @@ class AssertionExecutor:
         "visible_text": "text_visible",  # 兼容历史 Excel 写法
     }
 
-    def __init__(self, page: Page, timeout_ms: int = 5000):
+    def __init__(
+        self,
+        page: Page,
+        timeout_ms: int = 5000,
+        vision_harness: VisionHarness | None = None,
+        case_id: str = "",
+        vision_step_count: int = 0,
+        vision_step_failures: list[str] | None = None,
+    ):
         self.page = page
         self.timeout_ms = max(int(timeout_ms), 1)
+        # 普通断言不初始化视觉客户端；只有 vision_* 被调度时才按需创建。
+        self._vision_harness = vision_harness
+        self.case_id = str(case_id or "").strip()
+        self.vision_step_count = max(int(vision_step_count), 0)
+        self.vision_step_failures = list(vision_step_failures or [])
 
     @allure.step("断言: [{assert_type}] {verify_point}")
     def assert_by_type(self, assert_type: str, verify_point: str, locator: str = "") -> bool:
@@ -75,12 +90,41 @@ class AssertionExecutor:
                 return self._date_format(verify_point, locator)
             if assert_type == "text_optional":
                 return self._text_optional(verify_point, locator)
+            if assert_type == "vision_contains":
+                return self._vision().assert_contains(verify_point, locator)
+            if assert_type == "vision_count":
+                return self._vision().assert_count(verify_point, locator)
+            if assert_type == "vision_page_state":
+                return self._vision().assert_page_state(verify_point, locator)
+            if assert_type == "vision_canvas_ready":
+                return self._vision().assert_canvas_ready(verify_point, locator)
+            if assert_type == "vision_compare_reference":
+                return self._vision().assert_reference_compare(verify_point, locator)
+            if assert_type == "vision_step_sequence":
+                return self._vision_step_sequence(verify_point)
             raise ValueError(f"未知断言类型: {assert_type}")
         except AssertionError:
             raise
         except Exception as exc:
             logger.warning("  ❌ 断言执行异常: %s", exc)
             raise AssertionError(f"断言执行异常: {exc}") from exc
+
+    @allure.step("验证步骤视觉比较数量: {expected_text}")
+    def _vision_step_sequence(self, expected_text: str) -> bool:
+        numbers = re.findall(r"\d+", str(expected_text or ""))
+        if not numbers:
+            raise AssertionError("vision_step_sequence 缺少期望比较次数")
+        expected = int(numbers[0])
+        assert self.vision_step_count == expected, (
+            f"步骤视觉比较数量不完整：期望 {expected}，实际 {self.vision_step_count}"
+        )
+        if self.vision_step_failures:
+            details = "\n- ".join(self.vision_step_failures)
+            raise AssertionError(
+                f"步骤视觉比较存在 {len(self.vision_step_failures)} 个不一致：\n- {details}"
+            )
+        logger.info("  ✅ 步骤视觉比较全部完成: %s", expected)
+        return True
     @allure.step("验证文本相等: {expected}")
     def _text_equals(self, expected: str, locator: str) -> bool:
         # 【健壮性】等待页面加载完成再读取文本，避免页面未渲染完成导致误判
@@ -367,6 +411,15 @@ class AssertionExecutor:
         expect(element).to_be_visible(timeout=self.timeout_ms)
         logger.info("  ✅ 可选字段已显示: %s", expected[:40])
         return True
+
+    def _vision(self) -> VisionHarness:
+        if self._vision_harness is None:
+            self._vision_harness = VisionHarness(
+                self.page,
+                timeout_ms=self.timeout_ms,
+                case_id=self.case_id,
+            )
+        return self._vision_harness
     @staticmethod
     def _extract_assert_keyword(text: str) -> str:
         if not text:

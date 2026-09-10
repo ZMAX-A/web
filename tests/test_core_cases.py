@@ -166,6 +166,9 @@ class TestCoreCases:
         expected = substitute_runtime_tokens(test_case.get("期望结果", ""))
         verify_point = substitute_runtime_tokens(test_case.get("验证点", ""))
         assert_type = test_case.get("断言类型", "")
+        explicit_assertion_locator = substitute_runtime_tokens(
+            test_case.get("断言定位器", "")
+        ).strip()
 
         logger.info(f"执行 [{case_id}] {module} - {scenario}")
 
@@ -196,19 +199,26 @@ class TestCoreCases:
                 timeout_ms = int(float(timeout_seconds) * 1000)
         except (TypeError, ValueError):
             timeout_ms = 5000
-        executor = StepExecutor(page, base_url, timeout_ms=timeout_ms)
+        executor = StepExecutor(page, base_url, timeout_ms=timeout_ms, case_id=case_id)
         executor.execute(locators_str, operations_str, data_str)
 
         # 执行断言
         # 【健壮性】locators_str 可能为空，split 前做空值保护
         locator_list = [l.strip() for l in locators_str.split(",") if l.strip()] if locators_str else []
         last_locator = locator_list[-1] if locator_list else ""
+        assertion_locator = explicit_assertion_locator or last_locator
         # 等待页面稳定后再断言（Toast 消息需要时间渲染）
         page.wait_for_timeout(2000)
         # 【修复】断言必须用执行器当前的页面句柄：switch_tab 切换新标签页后，
         # 原始 page 还在旧页面上，断言会读到错误 URL/内容
-        assertion = AssertionExecutor(executor.get_current_page(), timeout_ms=timeout_ms)
-        assertion.assert_by_type(assert_type, verify_point or expected, last_locator)
+        assertion = AssertionExecutor(
+            executor.get_current_page(),
+            timeout_ms=timeout_ms,
+            case_id=case_id,
+            vision_step_count=executor.vision_step_count,
+            vision_step_failures=executor.vision_step_failures,
+        )
+        assertion.assert_by_type(assert_type, verify_point or expected, assertion_locator)
 
         logger.info(f"[{case_id}] ✅ 完成")
 

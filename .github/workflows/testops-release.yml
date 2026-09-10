@@ -1,0 +1,171 @@
+name: TestOps Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+
+concurrency:
+  group: testops-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  TESTOPS_REPOSITORY: ZMAX-A/TOP
+  TESTOPS_REVISION: ae009368227072ec00077153eaf41a15cd8d166b
+  PROJECT_KEY: yanjia-ai-web
+  BASELINE_WORKSHEET: 自动化测试用例
+  PACKAGE_NAME: yanjia-web-pytest
+  IMAGE_REPOSITORY: ghcr.io/zmax-a/web
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out Web release tag
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out pinned TestOps build adapter
+        uses: actions/checkout@v6.0.2
+        with:
+          repository: ${{ env.TESTOPS_REPOSITORY }}
+          ref: ${{ env.TESTOPS_REVISION }}
+          path: .testops-platform
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Resolve immutable release coordinates
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          test "v${release_version}" = "${GITHUB_REF_NAME}"
+          repository_version="$(tr -d '[:space:]' < VERSION)"
+          test "${release_version}" = "${repository_version}" || {
+            echo "Git tag ${GITHUB_REF_NAME} does not match VERSION=${repository_version}." >&2
+            exit 1
+          }
+          baseline_version="$(tr -d '[:space:]' < TESTOPS_BASELINE_VERSION)"
+          [[ "${baseline_version}" =~ ^case-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "TESTOPS_BASELINE_VERSION has an invalid value: ${baseline_version}." >&2
+            exit 1
+          }
+          source_revision="$(git rev-list -n 1 "${GITHUB_REF_NAME}")"
+          test "${#source_revision}" -eq 40
+          echo "RELEASE_VERSION=${release_version}" >> "${GITHUB_ENV}"
+          echo "BASELINE_VERSION=${baseline_version}" >> "${GITHUB_ENV}"
+          echo "SOURCE_REVISION=${source_revision}" >> "${GITHUB_ENV}"
+
+      - name: Validate framework and Excel catalog offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pytest unit_tests -q -o addopts=
+          PYTHONPATH=".testops-platform/packages/contracts/src:.testops-platform/packages/migrations/src" \
+            python -m testops.migrations.cli \
+              --source test_cases/test_case.xlsx \
+              --project-key "${PROJECT_KEY}" \
+              --version "${BASELINE_VERSION}" \
+              --worksheet "${BASELINE_WORKSHEET}" \
+              --output "${RUNNER_TEMP}/testops-baseline"
+
+      - name: Compute allowlisted package source digest
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="$(PYTHONPATH=".testops-platform/packages/contracts/src" \
+            python .testops-platform/scripts/package_legacy_pytest.py --source .)"
+          test "${digest#sha256:}" != "${digest}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.1.0
+
+      - name: Build and push immutable Runner image
+        id: image
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .testops-platform
+          file: .testops-platform/infra/docker/yanjia-web-pytest.Dockerfile
+          build-contexts: |
+            yanjia_web=.
+          build-args: |
+            RUNNER_PACKAGE_DIGEST=${{ steps.source.outputs.digest }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_REPOSITORY }}:${{ env.RELEASE_VERSION }}
+          provenance: mode=max
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SOURCE_REVISION }}
+            org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign immutable image digest with GitHub OIDC
+        shell: bash
+        run: cosign sign --yes "${IMAGE_REPOSITORY}@${{ steps.image.outputs.digest }}"
+
+      - name: Build TestOps release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=".testops-platform/packages/contracts/src" \
+            python scripts/build_testops_release_manifest.py \
+              --baseline "${RUNNER_TEMP}/testops-baseline/case-baseline.json" \
+              --baseline-manifest "${RUNNER_TEMP}/testops-baseline/manifest.json" \
+              --repository-url "https://github.com/${GITHUB_REPOSITORY}" \
+              --tag "${GITHUB_REF_NAME}" \
+              --revision "${SOURCE_REVISION}" \
+              --package-name "${PACKAGE_NAME}" \
+              --package-version "${RELEASE_VERSION}" \
+              --package-digest "${{ steps.image.outputs.digest }}" \
+              --image-repository "${IMAGE_REPOSITORY}" \
+              --output "${RUNNER_TEMP}/testops-release-manifest.json"
+
+      - name: Create immutable GitHub Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            "${RUNNER_TEMP}/testops-release-manifest.json"
+            "${RUNNER_TEMP}/testops-baseline/case-baseline.json"
+            "${RUNNER_TEMP}/testops-baseline/migration-audit.json"
+            "${RUNNER_TEMP}/testops-baseline/manifest.json"
+          )
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; refusing to replace immutable assets." >&2
+            exit 1
+          fi
+          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+            --verify-tag \
+            --title "TestOps ${GITHUB_REF_NAME}" \
+            --notes "Immutable TestOps Web Runner image and normalized Excel case baseline."
