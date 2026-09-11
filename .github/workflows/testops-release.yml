@@ -4,10 +4,11 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+      - "case-v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing immutable release tag to publish
+        description: Existing immutable package or case-baseline tag to publish
         required: true
         type: string
 
@@ -23,11 +24,12 @@ concurrency:
 env:
   PYTHON_VERSION: "3.12"
   TESTOPS_REPOSITORY: ZMAX-A/TOP
-  TESTOPS_REVISION: ae009368227072ec00077153eaf41a15cd8d166b
+  TESTOPS_REVISION: 67bd2cb932eb4ec54a12e8cfc23c73f0491dbc6e
   PROJECT_KEY: yanjia-ai-web
   BASELINE_WORKSHEET: 自动化测试用例
   PACKAGE_NAME: yanjia-web-pytest
   IMAGE_REPOSITORY: ghcr.io/zmax-a/web
+  EXCEL_RUNTIME_MIN_PACKAGE_VERSION: "1.1.12"
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
@@ -61,20 +63,46 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          release_version="${RELEASE_TAG#v}"
-          test "v${release_version}" = "${RELEASE_TAG}"
           repository_version="$(tr -d '[:space:]' < VERSION)"
-          test "${release_version}" = "${repository_version}" || {
-            echo "Git tag ${RELEASE_TAG} does not match VERSION=${repository_version}." >&2
+          baseline_version="$(tr -d '[:space:]' < TESTOPS_BASELINE_VERSION)"
+          [[ "${repository_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "VERSION has an invalid value: ${repository_version}." >&2
             exit 1
           }
-          baseline_version="$(tr -d '[:space:]' < TESTOPS_BASELINE_VERSION)"
           [[ "${baseline_version}" =~ ^case-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "TESTOPS_BASELINE_VERSION has an invalid value: ${baseline_version}." >&2
             exit 1
           }
+
+          if [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            release_mode="package"
+            release_version="${RELEASE_TAG#v}"
+            test "${release_version}" = "${repository_version}" || {
+              echo "Git tag ${RELEASE_TAG} does not match VERSION=${repository_version}." >&2
+              exit 1
+            }
+          elif [[ "${RELEASE_TAG}" =~ ^case-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            release_mode="baseline"
+            release_version="${repository_version}"
+            minimum_version="$(printf '%s\n%s\n' \
+              "${EXCEL_RUNTIME_MIN_PACKAGE_VERSION}" \
+              "${release_version}" | sort -V | head -n 1)"
+            test "${minimum_version}" = "${EXCEL_RUNTIME_MIN_PACKAGE_VERSION}" || {
+              echo "Excel-only releases require Runner package v${EXCEL_RUNTIME_MIN_PACKAGE_VERSION} or newer; publish a transition package first." >&2
+              exit 1
+            }
+            test "${RELEASE_TAG}" = "${baseline_version}" || {
+              echo "Git tag ${RELEASE_TAG} does not match TESTOPS_BASELINE_VERSION=${baseline_version}." >&2
+              exit 1
+            }
+          else
+            echo "Unsupported release tag: ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+
           source_revision="$(git rev-list -n 1 "${RELEASE_TAG}")"
-          test "${#source_revision}" -eq 40
+          [[ "${source_revision}" =~ ^[0-9a-f]{40}$ ]]
+          echo "RELEASE_MODE=${release_mode}" >> "${GITHUB_ENV}"
           echo "RELEASE_VERSION=${release_version}" >> "${GITHUB_ENV}"
           echo "BASELINE_VERSION=${baseline_version}" >> "${GITHUB_ENV}"
           echo "SOURCE_REVISION=${source_revision}" >> "${GITHUB_ENV}"
@@ -95,6 +123,7 @@ jobs:
               --output "${RUNNER_TEMP}/testops-baseline"
 
       - name: Compute allowlisted package source digest
+        if: env.RELEASE_MODE == 'package'
         id: source
         shell: bash
         run: |
@@ -105,6 +134,7 @@ jobs:
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
 
       - name: Log in to GHCR
+        if: env.RELEASE_MODE == 'package'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -112,9 +142,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
+        if: env.RELEASE_MODE == 'package'
         uses: docker/setup-buildx-action@v4.1.0
 
       - name: Build and push immutable Runner image
+        if: env.RELEASE_MODE == 'package'
         id: image
         uses: docker/build-push-action@v7.2.0
         with:
@@ -135,11 +167,92 @@ jobs:
             org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
 
       - name: Install Cosign
+        if: env.RELEASE_MODE == 'package'
         uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign immutable image digest with GitHub OIDC
+        if: env.RELEASE_MODE == 'package'
         shell: bash
         run: cosign sign --yes "${IMAGE_REPOSITORY}@${{ steps.image.outputs.digest }}"
+
+      - name: Resolve immutable package coordinates
+        id: package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILT_PACKAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test "${RELEASE_MODE}" = "package"; then
+            echo "name=${PACKAGE_NAME}" >> "${GITHUB_OUTPUT}"
+            echo "version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+            echo "digest=${BUILT_PACKAGE_DIGEST}" >> "${GITHUB_OUTPUT}"
+            echo "image_repository=${IMAGE_REPOSITORY}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          reuse_dir="${RUNNER_TEMP}/testops-reused-package"
+          mkdir -p "${reuse_dir}"
+          gh release download "v${RELEASE_VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern testops-release-manifest.json \
+            --dir "${reuse_dir}"
+          python - \
+            "${reuse_dir}/testops-release-manifest.json" \
+            "${GITHUB_OUTPUT}" \
+            "${PACKAGE_NAME}" \
+            "${RELEASE_VERSION}" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          manifest_path, output_path, expected_name, expected_version = sys.argv[1:]
+          document = json.loads(Path(manifest_path).read_text("utf-8"))
+          package = document.get("automation_package", {})
+          source = document.get("source", {})
+          values = {
+              "name": package.get("name"),
+              "version": package.get("version"),
+              "digest": package.get("digest"),
+              "image_repository": package.get("image_repository"),
+              "source_revision": source.get("revision"),
+          }
+          if values["name"] != expected_name or values["version"] != expected_version:
+              raise SystemExit("reused package coordinates do not match VERSION/PACKAGE_NAME")
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(values["digest"])):
+              raise SystemExit("reused package digest is invalid")
+          if not re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+", str(values["image_repository"])):
+              raise SystemExit("reused image repository is invalid")
+          if not re.fullmatch(r"[0-9a-f]{40}", str(values["source_revision"])):
+              raise SystemExit("reused package source revision is invalid")
+          with Path(output_path).open("a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          PY
+
+      - name: Enforce Excel-only source changes
+        if: env.RELEASE_MODE == 'baseline'
+        env:
+          PACKAGE_SOURCE_REVISION: ${{ steps.package.outputs.source_revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "${PACKAGE_SOURCE_REVISION}" "${SOURCE_REVISION}" || {
+            echo "Reused package revision is not an ancestor of this baseline release." >&2
+            exit 1
+          }
+          while IFS= read -r path; do
+            test -n "${path}" || continue
+            case "${path}" in
+              test_cases/test_case.xlsx|TESTOPS_BASELINE_VERSION|CHANGELOG.md|RELEASE.md|docs/*|.github/workflows/testops-release.yml)
+                ;;
+              *)
+                echo "Excel-only release contains package-affecting change: ${path}" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only "${PACKAGE_SOURCE_REVISION}..${SOURCE_REVISION}")
 
       - name: Build TestOps release manifest
         shell: bash
@@ -152,15 +265,16 @@ jobs:
               --repository-url "https://github.com/${GITHUB_REPOSITORY}" \
               --tag "${RELEASE_TAG}" \
               --revision "${SOURCE_REVISION}" \
-              --package-name "${PACKAGE_NAME}" \
-              --package-version "${RELEASE_VERSION}" \
-              --package-digest "${{ steps.image.outputs.digest }}" \
-              --image-repository "${IMAGE_REPOSITORY}" \
+              --package-name "${{ steps.package.outputs.name }}" \
+              --package-version "${{ steps.package.outputs.version }}" \
+              --package-digest "${{ steps.package.outputs.digest }}" \
+              --image-repository "${{ steps.package.outputs.image_repository }}" \
               --output "${RUNNER_TEMP}/testops-release-manifest.json"
 
       - name: Create immutable GitHub Release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -174,7 +288,12 @@ jobs:
             echo "Release ${RELEASE_TAG} already exists; refusing to replace immutable assets." >&2
             exit 1
           fi
+          if test "${RELEASE_MODE}" = "baseline"; then
+            release_notes="Immutable normalized Excel case baseline reusing Runner package v${PACKAGE_VERSION}."
+          else
+            release_notes="Immutable TestOps Web Runner image and normalized Excel case baseline."
+          fi
           gh release create "${RELEASE_TAG}" "${assets[@]}" \
             --verify-tag \
             --title "TestOps ${RELEASE_TAG}" \
-            --notes "Immutable TestOps Web Runner image and normalized Excel case baseline."
+            --notes "${release_notes}"
