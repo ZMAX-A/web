@@ -3,7 +3,7 @@
 > 基于 Playwright + pytest + Allure 的数据驱动自动化测试框架。
 > **不需要编程知识**，只需编辑 Excel 即可新增/修改测试用例。
 >
-> 当前开发版本：`v1.1.0`；版本变更见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [RELEASE.md](RELEASE.md)。
+> 当前开发版本：`v1.1.11`；版本变更见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [RELEASE.md](RELEASE.md)。
 
 ---
 
