@@ -2,6 +2,14 @@
 
 本项目使用[Semantic Versioning](https://semver.org/lang/zh-CN/)管理版本。
 
+## [case-v1.0.7] - 2026-09-15
+
+### Excel 基线
+
+- Excel 基线版本升级为 `case-v1.0.7`，继续复用 Web Runner `v1.1.12`。
+- 基线保留 98 条用例、85 条启用；`TC-IMAGE-042` 保持停用。
+- 收紧 `TC-DETAIL-024`、`TC-DETAIL-025`、`TC-DETAIL-028` 和 `TC-DETAIL-029` 的历史影像管理区域定位，避免误点其他“管理”入口。
+
 ## [1.1.12] - 2026-09-11
 
 ### TestOps 发布
