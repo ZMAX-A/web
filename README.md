@@ -3,7 +3,7 @@
 > 基于 Playwright + pytest + Allure 的数据驱动自动化测试框架。
 > **不需要编程知识**，只需编辑 Excel 即可新增/修改测试用例。
 >
-> 当前开发版本：`v1.1.12`；版本变更见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [RELEASE.md](RELEASE.md)。
+> 当前开发版本：`v1.1.13`；版本变更见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [RELEASE.md](RELEASE.md)。
 
 ---
 
@@ -223,6 +223,15 @@ winget install Allure.Allure
 
 ### Q：失败原因在哪里看？
 → Excel 的「实际结果」列会写 `fail: 具体原因`。同时 `screenshots/` 文件夹下有失败时的页面截图。
+
+### Q：终端中文日志出现乱码，或测试通过后提示 Excel 回写失败？
+→ 测试启动脚本会统一使用 UTF-8 控制台和 Python 输出编码；修改后请关闭旧测试窗口，重新双击脚本。若直接在命令提示符中运行 pytest，请先执行 `chcp 65001` 和 `set PYTHONIOENCODING=utf-8`。`Permission denied` 表示结果未能写入用例表；运行前保存并关闭 Excel/WPS 中的 `test_cases/test_case.xlsx`。回写失败不改变 pytest 的测试结果，需查看终端提示。
+
+### Q：浏览器启动时报 `EPERM ... mkdtemp ... playwright-artifacts`？
+→ 这表示运行进程无法创建浏览器临时目录。Windows 测试启动时会自动将 `TEMP`、`TMP`、`TMPDIR` 和默认 pytest 临时目录设到项目的 `.runtime-tmp/` 下，每次运行使用独立子目录，无需修改系统权限。会话收尾时自动清理本次目录并恢复进程原有临时目录设置；被占用或无权限清理时会输出警告并保留目录。强制终止进程可能留下目录。此设置适用于各个运行脚本及直接执行 pytest；显式传入的 `--basetemp` 仍会保留。若项目临时目录也报权限错误，请在普通 Windows 终端中运行，或按当前执行环境的要求批准进程所需权限。
+
+### Q：步骤视觉比较报 `STEP_VIEWPORT_MISMATCH`，截图只差 1 像素？
+→ `body` 的实际布局可能带小数尺寸，元素截图向外取整后会比固定视口多 1 像素。`vision_compare_step` 使用 `body` 时改用固定视口截图（`full_page=False, scale="css"`），再按步骤元数据裁剪红框区域。其他元素仍按元素截图。标准图哈希、尺寸及裁剪边界检查继续生效；真实视口不一致仍会失败。
 
 ### Q：想只跑某几个用例怎么办？
 → 双击 `run_one_case.bat`，输入用例ID（例如 `TC-DETAIL-004`）。不要为了筛选用例删除 Excel 行。

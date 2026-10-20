@@ -1,4 +1,7 @@
 @echo off
+setlocal
+chcp 65001 >nul
+set "PYTHONIOENCODING=utf-8"
 title YanJiaAI - Run Single Test Case
 color 0E
 

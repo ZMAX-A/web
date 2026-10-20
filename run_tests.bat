@@ -1,4 +1,7 @@
 @echo off
+setlocal
+chcp 65001 >nul
+set "PYTHONIOENCODING=utf-8"
 title YanJiaAI Test Runner
 color 0A
 

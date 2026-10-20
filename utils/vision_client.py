@@ -16,6 +16,7 @@
 """
 import base64
 import logging
+import math
 import os
 from urllib.parse import urlparse
 
@@ -91,6 +92,7 @@ def analyze_image(
     system_prompt: str = "",
     discipline: bool = True,
     json_mode: bool = False,
+    timeout_seconds: float | None = None,
 ) -> str:
     """发送图片 + prompt 到视觉模型，返回模型文本回答。
 
@@ -100,6 +102,7 @@ def analyze_image(
     :param discipline: 是否启用内置纪律 prompt（只报可见内容、缺失答"不存在"）。
                        调用方自带 system_prompt 时此参数无效果
     :param json_mode: 是否要求 JSON 结构化输出
+    :param timeout_seconds: 本次请求超时；为空时使用 VISION_TIMEOUT
     """
     # 避免 pytest showlocals 在失败回溯中展开截图二进制。
     __tracebackhide__ = True
@@ -110,6 +113,7 @@ def analyze_image(
         system_prompt=system_prompt,
         discipline=discipline,
         json_mode=json_mode,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -120,6 +124,7 @@ def analyze_images(
     system_prompt: str = "",
     discipline: bool = True,
     json_mode: bool = False,
+    timeout_seconds: float | None = None,
 ) -> str:
     """一次请求发送一张或多张图片，按给定顺序返回模型文本回答。
 
@@ -146,6 +151,16 @@ def analyze_images(
             raise VisionError("图片标签必须与图片数量一致且不能为空")
 
     cfg = _config()
+    request_timeout = cfg["timeout"]
+    if timeout_seconds is not None:
+        if isinstance(timeout_seconds, bool):
+            raise VisionError("视觉模型请求超时必须是正数秒数")
+        try:
+            request_timeout = float(timeout_seconds)
+        except (TypeError, ValueError):
+            raise VisionError("视觉模型请求超时必须是正数秒数") from None
+        if not math.isfinite(request_timeout) or request_timeout <= 0:
+            raise VisionError("视觉模型请求超时必须是正数秒数")
 
     messages = []
     if system_prompt or discipline:
@@ -197,7 +212,7 @@ def analyze_images(
         total_bytes,
     )
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=cfg["timeout"])
+        resp = requests.post(url, json=payload, headers=headers, timeout=request_timeout)
     except requests.RequestException as exc:
         raise VisionError(f"视觉模型请求失败: {exc}") from None
 

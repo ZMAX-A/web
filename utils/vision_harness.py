@@ -27,11 +27,11 @@ from typing import Any, Callable
 
 import allure
 
-from utils.vision_client import analyze_image
+from utils.vision_client import VisionError, analyze_image
 
 logger = logging.getLogger("vision_harness")
 
-PROMPT_VERSION = "yanjia-vision-harness-v4"
+PROMPT_VERSION = "yanjia-vision-harness-v5"
 BASELINE_METADATA_VERSION = 1
 ITEM_STATUSES = frozenset({"visible", "not_visible", "uncertain"})
 PAGE_STATES = frozenset({"image_viewer", "login_page", "customer_list", "loading", "unknown"})
@@ -40,7 +40,13 @@ REFERENCE_MATCH_STATES = frozenset({"match", "mismatch", "uncertain"})
 REFERENCE_USABILITY_STATES = frozenset({"usable", "unusable", "uncertain"})
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _SAFE_CASE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_SAFE_STEP_FILE = re.compile(r"step_[0-9]{3}_[A-Za-z0-9_-]+[.]png")
+_SAFE_STEP_FILE = re.compile(r"step_[0-9]{3}(?:_[A-Za-z0-9_-]+)?[.]png")
+_ALLOWED_DIFFERENCE_RULES = {
+    "viewer_panel_hint": {
+        "description": "影像阅览页右侧蓝色引导提示浮层：提示收起面板可获得更大的影像展示区域",
+        "required_terms": ("蓝色", "提示", "收起面板", "影像展示区域"),
+    },
+}
 
 _PAGE_ALIASES = {
     "影像阅览页": "image_viewer",
@@ -109,6 +115,11 @@ def _positive_int_env(name: str, default: int) -> int:
     except (AttributeError, TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def _normalized_visual_text(value: str) -> str:
+    """移除空白和标点，供本地允许差异规则做确定性匹配。"""
+    return re.sub(r"[^\w]+", "", str(value or "").casefold())
 
 
 def _strip_json_fence(raw: str) -> str:
@@ -238,7 +249,7 @@ class VisionHarness:
             or not _SAFE_STEP_FILE.fullmatch(parts[1])
         ):
             raise VisionHarnessError(
-                "步骤标准图引用格式错误；必须为 <基线用例ID>/step_序号_名称.png"
+                "步骤标准图引用格式错误；必须为 <基线用例ID>/step_三位序号.png 或 step_三位序号_名称.png"
             )
         if not normalized_locator:
             raise VisionHarnessError("步骤视觉比较缺少截图区域")
@@ -357,7 +368,8 @@ class VisionHarness:
         if not locator:
             raise VisionHarnessError("步骤视觉比较必须填写截图定位器")
         baseline = self.load_step_baseline(reference_key, locator)
-        current_full = self._capture(locator)
+        # body 步骤基线使用视口坐标；元素的小数边界向外取整会多截一像素。
+        current_full = self._capture(locator, viewport=locator == "body")
         reference_crop, current_crop = self._crop_step_pair(
             baseline.image_bytes,
             current_full,
@@ -377,17 +389,30 @@ class VisionHarness:
             f"当前操作状态必须与步骤标准图 {baseline.path.name} 的红框内界面一致，"
             "布局和关键元素完整、页面可用且无异常提示"
         )
+        allowed_rules = baseline.metadata.get("allowed_difference_rules", [])
+        allowed_differences = list(baseline.metadata.get("allowed_dynamic_differences", []))
+        allowed_differences.extend(
+            _ALLOWED_DIFFERENCE_RULES[rule_name]["description"]
+            for rule_name in allowed_rules
+        )
         prompt = self._reference_compare_prompt(
             focus,
-            baseline.metadata.get("allowed_dynamic_differences", []),
+            allowed_differences,
         )
-        return self._inspect_reference(
-            reference_crop,
-            current_crop,
-            comparison_bytes,
-            prompt,
-            self._validate_reference_compare,
-        )
+        try:
+            return self._inspect_reference(
+                reference_crop,
+                current_crop,
+                comparison_bytes,
+                prompt,
+                self._validate_reference_compare,
+                allowed_difference_rules=allowed_rules,
+                request_timeout_seconds=baseline.metadata.get("request_timeout_seconds"),
+            )
+        except VisionError as exc:
+            raise VisionHarnessError(
+                f"步骤视觉模型请求失败[{reference_key}]: {exc}"
+            ) from None
 
     def _capture_step_current(self, config: dict[str, Any]) -> bytes:
         """按步骤元数据定位当前 DOM 组件，避免标准图绝对坐标错套到动态布局。"""
@@ -528,6 +553,8 @@ class VisionHarness:
         comparison_bytes: bytes,
         prompt: str,
         validator: Callable[[dict[str, Any]], dict[str, Any]],
+        allowed_difference_rules: list[str] | None = None,
+        request_timeout_seconds: int | None = None,
     ) -> VisionInspection:
         # pytest 失败回溯不展开截图二进制和拼接图，避免客户影像进入日志。
         __tracebackhide__ = True
@@ -548,17 +575,28 @@ class VisionHarness:
             cached = True
         else:
             started = time.perf_counter()
-            raw = self._compare_analyze_fn(
-                comparison_bytes, prompt, discipline=True, json_mode=True
-            )
+            request_kwargs: dict[str, Any] = {"discipline": True, "json_mode": True}
+            if request_timeout_seconds is not None:
+                request_kwargs["timeout_seconds"] = request_timeout_seconds
+            raw = self._compare_analyze_fn(comparison_bytes, prompt, **request_kwargs)
             latency_ms = round((time.perf_counter() - started) * 1000)
             observation = validator(_parse_json_object(raw))
+            observation = self._apply_allowed_difference_rules(
+                observation,
+                allowed_difference_rules or [],
+            )
             if _env_flag("VISION_CACHE_ENABLED", True):
                 self._cache[cache_key] = observation
                 self._cache.move_to_end(cache_key)
                 max_items = _positive_int_env("VISION_CACHE_MAX_ITEMS", 256)
                 while len(self._cache) > max_items:
                     self._cache.popitem(last=False)
+
+        observation = dict(observation)
+        if allowed_difference_rules:
+            observation["harness_allowed_difference_rules"] = list(allowed_difference_rules)
+        if request_timeout_seconds is not None:
+            observation["harness_request_timeout_seconds"] = request_timeout_seconds
 
         inspection = VisionInspection(
             task="reference_compare",
@@ -576,6 +614,39 @@ class VisionHarness:
             comparison_bytes,
         )
         return inspection
+
+    @staticmethod
+    def _apply_allowed_difference_rules(
+        observation: dict[str, Any],
+        rule_names: list[str],
+    ) -> dict[str, Any]:
+        """仅忽略元数据明确启用且关键字完整命中的非阻断差异。"""
+        if not rule_names or not observation["critical_differences"]:
+            return observation
+
+        remaining: list[str] = []
+        ignored: list[str] = []
+        for difference in observation["critical_differences"]:
+            normalized = _normalized_visual_text(difference)
+            matched = any(
+                all(
+                    _normalized_visual_text(term) in normalized
+                    for term in _ALLOWED_DIFFERENCE_RULES[rule_name]["required_terms"]
+                )
+                for rule_name in rule_names
+            )
+            (ignored if matched else remaining).append(difference)
+
+        if not ignored:
+            return observation
+
+        adjusted = dict(observation)
+        adjusted["critical_differences"] = remaining
+        adjusted["harness_ignored_differences"] = ignored
+        if adjusted["layout_status"] == "mismatch" and not remaining:
+            adjusted["layout_status"] = "match"
+        logger.info("Harness 已忽略允许的非阻断差异: %s", "；".join(ignored))
+        return adjusted
 
     def _compose_reference_pair(self, reference_bytes: bytes, current_bytes: bytes) -> bytes:
         """在当前浏览器内存中把两图纵向拼接，兼容单图输入的视觉网关。"""
@@ -728,18 +799,24 @@ class VisionHarness:
             raise VisionHarnessError(f"浏览器返回的 {label} PNG 无法解码") from exc
         return VisionHarness._validate_image_bytes(image_bytes, label)
 
-    def _capture(self, locator: str) -> bytes:
+    def _capture(self, locator: str, *, viewport: bool = False) -> bytes:
         if not locator:
             raise VisionHarnessError("视觉断言必须填写独立的「断言定位器」，拒绝发送整页截图")
         try:
             target = self.page.locator(locator).first
             target.wait_for(state="visible", timeout=self.timeout_ms)
-            image_bytes = target.screenshot(
-                type="png",
-                animations="disabled",
-                caret="hide",
-                timeout=self.timeout_ms,
-            )
+            options = {
+                "type": "png",
+                "animations": "disabled",
+                "caret": "hide",
+                "timeout": self.timeout_ms,
+            }
+            if viewport:
+                image_bytes = self.page.screenshot(
+                    full_page=False, scale="css", **options,
+                )
+            else:
+                image_bytes = target.screenshot(**options)
         except Exception as exc:
             raise VisionHarnessError(f"视觉断言区域截图失败: {locator}: {exc}") from exc
 
@@ -933,7 +1010,12 @@ class VisionHarness:
             )
         entry = references[image_path.name]
         entry_required = {"image_sha256", "image_width", "image_height", "crop_box"}
-        entry_optional = {"current_capture", "current_crop_box"}
+        entry_optional = {
+            "allowed_difference_rules",
+            "current_capture",
+            "current_crop_box",
+            "request_timeout_seconds",
+        }
         if (
             not isinstance(entry, dict)
             or not entry_required.issubset(entry)
@@ -977,6 +1059,24 @@ class VisionHarness:
             )
         current_capture = entry.get("current_capture")
         current_crop_box = entry.get("current_crop_box")
+        allowed_difference_rules = entry.get("allowed_difference_rules", [])
+        if (
+            not isinstance(allowed_difference_rules, list)
+            or any(not isinstance(name, str) or name not in _ALLOWED_DIFFERENCE_RULES for name in allowed_difference_rules)
+            or len(set(allowed_difference_rules)) != len(allowed_difference_rules)
+        ):
+            raise VisionHarnessError(
+                "步骤 allowed_difference_rules 必须是已注册且不重复的规则名数组"
+            )
+        request_timeout_seconds = entry.get("request_timeout_seconds")
+        if request_timeout_seconds is not None and (
+            type(request_timeout_seconds) is not int
+            or request_timeout_seconds <= 0
+            or request_timeout_seconds > 1800
+        ):
+            raise VisionHarnessError(
+                "步骤 request_timeout_seconds 必须是 1 至 1800 的整数秒数"
+            )
         if current_capture is not None and current_crop_box is not None:
             raise VisionHarnessError(
                 "步骤 current_capture 与 current_crop_box 不能同时配置"
@@ -1048,7 +1148,9 @@ class VisionHarness:
             "crop_box": crop_box,
             "current_crop_box": current_crop_box,
             "allowed_dynamic_differences": [item.strip() for item in differences],
+            "allowed_difference_rules": list(allowed_difference_rules),
             "current_capture": current_capture,
+            "request_timeout_seconds": request_timeout_seconds,
         }
 
     @staticmethod

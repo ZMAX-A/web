@@ -6,6 +6,7 @@ Allure 集成：
 """
 import re
 import logging
+import time
 from datetime import datetime
 import allure
 from playwright.sync_api import Page, expect
@@ -143,34 +144,33 @@ class AssertionExecutor:
 
     @allure.step("验证文本包含: {expected}")
     def _text_contains(self, expected: str, locator: str) -> bool:
-        """验证文本包含指定内容（三元兜底：元素→body→Toast）"""
-        # 【健壮性】等待页面加载稳定后再读取文本，避免因页面切换中导致文本读取不全
-        try:
-            self.page.wait_for_load_state("domcontentloaded", timeout=self.timeout_ms)
-        except Exception:
-            pass
+        """在超时内检查当前页面文本，避免一次读取错过延迟出现的 Toast。"""
         keyword = self._extract_assert_keyword(expected) or expected
-        if locator:
+        deadline = time.monotonic() + self.timeout_ms / 1000
+        body_text = ""
+        while True:
+            # 先读页面，避免不存在的末步定位器耗尽短暂提示的显示时间。
+            read_timeout = max(1, min(100, round((deadline - time.monotonic()) * 1000)))
             try:
-                actual = self.page.locator(locator).first.inner_text(timeout=2000)
-                if keyword in actual:
-                    logger.info(f"  ✅ 元素文本包含: {keyword}")
+                body_text = self.page.locator("body").inner_text(timeout=read_timeout)
+                if keyword in body_text:
+                    logger.info("  ✅ 页面文本包含: %s", keyword)
                     return True
             except Exception:
                 pass
-        body_text = self.page.locator("body").inner_text()
-        if keyword in body_text:
-            logger.info(f"  ✅ body文本包含: {keyword}")
-            return True
-        try:
-            toast = self.page.locator(".ant-message-notice")
-            if toast.count() > 0:
-                toast_text = toast.first.inner_text()
-                if keyword in toast_text:
-                    logger.info(f"  ✅ Toast包含: {keyword}")
-                    return True
-        except Exception:
-            pass
+            if locator:
+                try:
+                    read_timeout = max(1, min(100, round((deadline - time.monotonic()) * 1000)))
+                    actual = self.page.locator(locator).first.inner_text(timeout=read_timeout)
+                    if keyword in actual:
+                        logger.info("  ✅ 元素文本包含: %s", keyword)
+                        return True
+                except Exception:
+                    pass
+            remaining_ms = round((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                break
+            self.page.wait_for_timeout(min(100, remaining_ms))
         raise AssertionError(f"文本不包含「{keyword}」\n  body: {body_text[:200]}")
 
     @allure.step("验证文本可见: {expected}")

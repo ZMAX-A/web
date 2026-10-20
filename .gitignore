@@ -30,6 +30,12 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.runtime-tmp/
+.pytest-tmp/
+.pytest-bt/
+pytest-of-*/
+*.log
+*.lnk
 
 # Excel 临时文件
 ~$*.xlsx

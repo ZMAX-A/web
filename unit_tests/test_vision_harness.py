@@ -44,6 +44,8 @@ class _FakeLocator:
 class _FakePage:
     def __init__(self, image_bytes=None):
         self.target = _FakeLocator(image_bytes or _png_bytes())
+        self.viewport_image_bytes = self.target.image_bytes
+        self.screenshot_calls = []
         self.selectors = []
         self.comparison = _png_bytes(width=1640, height=1916, size=1500)
         self.evaluate_calls = []
@@ -51,6 +53,10 @@ class _FakePage:
     def locator(self, selector):
         self.selectors.append(selector)
         return self.target
+
+    def screenshot(self, **kwargs):
+        self.screenshot_calls.append(kwargs)
+        return self.viewport_image_bytes
 
     def evaluate(self, script, arg):
         self.evaluate_calls.append((script, arg))
@@ -102,6 +108,8 @@ def test_vision_contains_crops_locator_and_passes_all_visible():
     assert harness.assert_contains("'冷光','毛孔'", "[data-testid='toolbar']") is True
     assert page.selectors == ["[data-testid='toolbar']"]
     assert page.target.wait_calls == [{"state": "visible", "timeout": 9000}]
+    assert page.screenshot_calls == []
+    assert len(page.target.screenshot_calls) == 1
     assert analyze.calls[0][2] == {"discipline": True, "json_mode": True}
     assert "冷光" in analyze.calls[0][1] and "毛孔" in analyze.calls[0][1]
 
@@ -297,7 +305,49 @@ def _write_step_metadata(path, image_bytes, filename="step_005_page_loaded.png",
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def test_step_reference_uses_manifest_crop_and_local_verdict(tmp_path, monkeypatch):
+@pytest.mark.parametrize("filename", ["step_007.png", "step_007_skin_tone.png"])
+def test_step_baseline_accepts_optional_descriptive_name(tmp_path, monkeypatch, filename):
+    baseline = _png_bytes(width=640, height=360, size=1200)
+    steps_dir = tmp_path / "TC-IMAGE-043" / "steps"
+    steps_dir.mkdir(parents=True)
+    (steps_dir / filename).write_bytes(baseline)
+    _write_step_metadata(
+        steps_dir / "steps.meta.json", baseline, filename, case_id="TC-IMAGE-043"
+    )
+    monkeypatch.setenv("VISION_BASELINE_DIR", str(tmp_path))
+
+    loaded = VisionHarness.load_step_baseline(f"TC-IMAGE-043/{filename}", "body")
+
+    assert loaded.path == steps_dir / filename
+    assert loaded.image_sha256 == hashlib.sha256(baseline).hexdigest()
+    assert loaded.metadata["crop_box"] == [10, 10, 620, 340]
+
+
+@pytest.mark.parametrize("reference", [
+    "TC-IMAGE-043/../step_007.png",
+    "TC-IMAGE-043/step_007.png/ignored",
+    "TC-IMAGE-043/step_007.png.exe",
+    "TC-IMAGE-043/step_07.png",
+    "TC-IMAGE-043/step_007_.png",
+    "TC-IMAGE-043/step_007/evil.png",
+])
+def test_step_baseline_rejects_invalid_reference_before_reading_files(reference):
+    with pytest.raises(VisionHarnessError, match="步骤标准图引用格式错误"):
+        VisionHarness.load_step_baseline(reference, "body")
+
+
+def test_numbered_step_baseline_still_requires_metadata(tmp_path, monkeypatch):
+    steps_dir = tmp_path / "TC-IMAGE-043" / "steps"
+    steps_dir.mkdir(parents=True)
+    (steps_dir / "step_007.png").write_bytes(_png_bytes(width=640, height=360))
+    monkeypatch.setenv("VISION_BASELINE_DIR", str(tmp_path))
+
+    with pytest.raises(VisionHarnessError, match="STEP_BASELINE_METADATA_MISSING"):
+        VisionHarness.load_step_baseline("TC-IMAGE-043/step_007.png", "body")
+
+
+@pytest.mark.parametrize("element_extra", [0, 1])
+def test_step_reference_uses_manifest_crop_and_local_verdict(tmp_path, monkeypatch, element_extra):
     baseline = _png_bytes(width=640, height=360, size=1200)
     current = _png_bytes(width=640, height=360, size=1300)
     reference_crop = _png_bytes(width=620, height=340, size=1100)
@@ -316,8 +366,13 @@ def test_step_reference_uses_manifest_crop_and_local_verdict(tmp_path, monkeypat
         return reference_crop, current_crop
 
     compare = _CompareAnalyzeRecorder(_reference_response())
+    page = _FakePage(current)
+    # 模拟小数布局向外取整后 body 比视口宽、高各多一像素。
+    page.target.image_bytes = _png_bytes(
+        width=640 + element_extra, height=360 + element_extra, size=1300,
+    )
     harness = VisionHarness(
-        _FakePage(current),
+        page,
         case_id="TC-IMAGE-042",
         compare_analyze_fn=compare,
         crop_fn=crop_pair,
@@ -326,9 +381,158 @@ def test_step_reference_uses_manifest_crop_and_local_verdict(tmp_path, monkeypat
 
     assert harness.assert_step_reference(f"TC-IMAGE-006/{filename}", "body") is True
     assert crop_calls == [(baseline, current, [10, 10, 620, 340])]
+    assert page.target.screenshot_calls == []
+    assert page.screenshot_calls == [{
+        "full_page": False, "scale": "css", "type": "png",
+        "animations": "disabled", "caret": "hide", "timeout": 5000,
+    }]
     assert compare.calls[0][0] == comparison
     assert filename in compare.calls[0][1]
     assert "轻微颜色差异" in compare.calls[0][1]
+
+
+def test_step_reference_allows_registered_viewer_panel_hint(tmp_path, monkeypatch):
+    baseline = _png_bytes(width=640, height=360, size=1200)
+    current = _png_bytes(width=640, height=360, size=1300)
+    steps_dir = tmp_path / "TC-IMAGE-006" / "steps"
+    steps_dir.mkdir(parents=True)
+    filename = "step_005_page_loaded.png"
+    (steps_dir / filename).write_bytes(baseline)
+    _write_step_metadata(
+        steps_dir / "steps.meta.json",
+        baseline,
+        filename,
+        references={
+            filename: {
+                "image_sha256": hashlib.sha256(baseline).hexdigest(),
+                "image_width": 640,
+                "image_height": 360,
+                "crop_box": [10, 10, 620, 340],
+                "current_crop_box": [10, 10, 620, 340],
+                "allowed_difference_rules": ["viewer_panel_hint"],
+            }
+        },
+    )
+    monkeypatch.setenv("VISION_BASELINE_DIR", str(tmp_path))
+    compare = _CompareAnalyzeRecorder(
+        _reference_response(
+            layout_status="mismatch",
+            critical_differences=[
+                "当前界面右侧多出蓝色提示浮层：提示收起面板，可获得更大的影像展示区域"
+            ],
+        )
+    )
+    harness = VisionHarness(
+        _FakePage(current),
+        case_id="TC-IMAGE-042",
+        compare_analyze_fn=compare,
+        crop_fn=lambda _reference, _current, _box: (
+            _png_bytes(width=620, height=340, size=1100),
+            _png_bytes(width=620, height=340, size=1150),
+        ),
+        compose_fn=lambda _reference, _current: _png_bytes(
+            width=620, height=720, size=1500
+        ),
+    )
+
+    inspection = harness.inspect_step_reference(f"TC-IMAGE-006/{filename}", "body")
+
+    assert VisionHarness.reference_compare_failures(inspection.observation) == []
+    assert inspection.observation["layout_status"] == "match"
+    assert inspection.observation["critical_differences"] == []
+    assert inspection.observation["harness_allowed_difference_rules"] == ["viewer_panel_hint"]
+    assert len(inspection.observation["harness_ignored_differences"]) == 1
+    assert "蓝色引导提示浮层" in compare.calls[0][1]
+
+
+def test_step_reference_keeps_unregistered_difference_as_failure(tmp_path, monkeypatch):
+    baseline = _png_bytes(width=640, height=360, size=1200)
+    steps_dir = tmp_path / "TC-IMAGE-006" / "steps"
+    steps_dir.mkdir(parents=True)
+    filename = "step_005_page_loaded.png"
+    (steps_dir / filename).write_bytes(baseline)
+    _write_step_metadata(
+        steps_dir / "steps.meta.json",
+        baseline,
+        filename,
+        references={
+            filename: {
+                "image_sha256": hashlib.sha256(baseline).hexdigest(),
+                "image_width": 640,
+                "image_height": 360,
+                "crop_box": [10, 10, 620, 340],
+                "current_crop_box": [10, 10, 620, 340],
+                "allowed_difference_rules": ["viewer_panel_hint"],
+            }
+        },
+    )
+    monkeypatch.setenv("VISION_BASELINE_DIR", str(tmp_path))
+    compare = _CompareAnalyzeRecorder(
+        _reference_response(
+            layout_status="mismatch",
+            critical_differences=[
+                "当前界面右侧多出蓝色提示浮层：提示收起面板，可获得更大的影像展示区域",
+                "视角回正按钮缺失",
+            ],
+        )
+    )
+    harness = VisionHarness(
+        _FakePage(baseline),
+        case_id="TC-IMAGE-042",
+        compare_analyze_fn=compare,
+        crop_fn=lambda _reference, _current, _box: (
+            _png_bytes(width=620, height=340, size=1100),
+            _png_bytes(width=620, height=340, size=1150),
+        ),
+        compose_fn=lambda _reference, _current: _png_bytes(
+            width=620, height=720, size=1500
+        ),
+    )
+
+    with pytest.raises(VisionAssertionMismatch, match="视角回正按钮缺失"):
+        harness.assert_step_reference(f"TC-IMAGE-006/{filename}", "body")
+
+
+def test_step_reference_uses_per_step_request_timeout(tmp_path, monkeypatch):
+    baseline = _png_bytes(width=640, height=360, size=1200)
+    steps_dir = tmp_path / "TC-IMAGE-006" / "steps"
+    steps_dir.mkdir(parents=True)
+    filename = "step_014_JingXiang.png"
+    (steps_dir / filename).write_bytes(baseline)
+    _write_step_metadata(
+        steps_dir / "steps.meta.json",
+        baseline,
+        filename,
+        references={
+            filename: {
+                "image_sha256": hashlib.sha256(baseline).hexdigest(),
+                "image_width": 640,
+                "image_height": 360,
+                "crop_box": [10, 10, 620, 340],
+                "current_crop_box": [10, 10, 620, 340],
+                "request_timeout_seconds": 360,
+            }
+        },
+    )
+    monkeypatch.setenv("VISION_BASELINE_DIR", str(tmp_path))
+    compare = _CompareAnalyzeRecorder(_reference_response())
+    harness = VisionHarness(
+        _FakePage(baseline),
+        case_id="TC-IMAGE-042",
+        compare_analyze_fn=compare,
+        crop_fn=lambda _reference, _current, _box: (
+            _png_bytes(width=620, height=340, size=1100),
+            _png_bytes(width=620, height=340, size=1150),
+        ),
+        compose_fn=lambda _reference, _current: _png_bytes(
+            width=620, height=720, size=1500
+        ),
+    )
+
+    inspection = harness.inspect_step_reference(f"TC-IMAGE-006/{filename}", "body")
+
+    assert compare.calls[0][2]["timeout_seconds"] == 360
+    assert inspection.observation["harness_request_timeout_seconds"] == 360
 
 
 def test_step_reference_can_use_separate_current_crop_box(tmp_path, monkeypatch):
@@ -824,6 +1028,37 @@ def test_vision_client_sends_two_labeled_images_in_one_request(monkeypatch):
     assert content[3]["text"] == "【当前截图】"
     assert "valid json object" in content[0]["text"]
     assert captured["payload"]["response_format"] == {"type": "json_object"}
+
+
+def test_vision_client_allows_per_request_timeout_override(monkeypatch):
+    monkeypatch.setenv("VISION_API_KEY", "unit-key")
+    monkeypatch.setenv("VISION_BASE_URL", "https://vision.test/api")
+    monkeypatch.setenv("VISION_MODEL", "unit-test-vision")
+    monkeypatch.setenv("VISION_TIMEOUT", "60")
+    monkeypatch.setenv("VISION_THINKING_BUDGET", "0")
+    captured = {}
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+    def fake_post(url, json, headers, timeout):
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(vision_client.requests, "post", fake_post)
+    vision_client.analyze_images(
+        [_png_bytes()],
+        "比较图片",
+        json_mode=True,
+        timeout_seconds=360,
+    )
+
+    assert captured["timeout"] == 360
 
 
 def test_vision_client_uses_dashscope_top_level_thinking_switch(monkeypatch):

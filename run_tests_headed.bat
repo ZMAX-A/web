@@ -1,5 +1,7 @@
 @echo off
+setlocal
 chcp 65001 >nul
+set "PYTHONIOENCODING=utf-8"
 title 颜佳AI 全量测试（有头模式）
 color 0E
 

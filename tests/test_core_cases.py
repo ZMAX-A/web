@@ -172,20 +172,7 @@ class TestCoreCases:
 
         logger.info(f"执行 [{case_id}] {module} - {scenario}")
 
-        # 如果定位器包含 #store，mock 门店 API 避免假账号无法加载
-        if "#store" in locators_str:
-            call_count = [0]
-            def store_or_login(route):
-                call_count[0] += 1
-                if call_count[0] == 1:
-                    # 第一次：返回门店数据（用真实access格式让前端正确解析）
-                    route.fulfill(status=200, content_type="application/json",
-                        body='{"code":0,"msg":"success","data":[{"access":"eyJpdiI6IkFLUEtaQ0ltWjA3aUQrTk5oaDRsQXc9PSIsInZhbHVlIjoiVnJ5cFZaTjQrS1RoNlJnYmk4S3E5Uk5uaGpCdjYwWnpRcTd1WWxIOVJkTUt5UFRpcGJSa1JONkNhOGRjYnBJSUtIWFU4d1ZKWUF0eVhhRjZmaXYxYUE9PSIsIm1hYyI6IjQ4YjFkNzE3MjU0MmQ1MWUxNmE2ZTQ2MmM2ZWY5Mjk3Yjg1NTU4NTkxZWIwOTJkY2Q2MjY3MTAwYjY4NWE3ZDAiLCJ0YWciOiIifQ==","organization_id":1,"organization_name":"默认门店","organization_icon":""}]}')
-                else:
-                    # 第二次及以后：透传到真实 API（登录验证）
-                    route.continue_()
-            page.route("**/accesses", store_or_login)
-
+        # 新版用例使用真实门店接口；#store 定位器不代表允许替换接口响应。
         # 处理前置条件
         self._handle_preconditions(
             preconditions, page, login_page, test_username, test_password, store_name
@@ -207,8 +194,9 @@ class TestCoreCases:
         locator_list = [l.strip() for l in locators_str.split(",") if l.strip()] if locators_str else []
         last_locator = locator_list[-1] if locator_list else ""
         assertion_locator = explicit_assertion_locator or last_locator
-        # 等待页面稳定后再断言（Toast 消息需要时间渲染）
-        page.wait_for_timeout(2000)
+        # 文本断言自行等待目标出现；固定延时会错过短暂的 Toast。
+        if str(assert_type).strip() not in ("text_contains", "text_visible", "visible_text"):
+            page.wait_for_timeout(2000)
         # 【修复】断言必须用执行器当前的页面句柄：switch_tab 切换新标签页后，
         # 原始 page 还在旧页面上，断言会读到错误 URL/内容
         assertion = AssertionExecutor(
