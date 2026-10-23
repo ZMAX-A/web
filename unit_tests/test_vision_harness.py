@@ -814,6 +814,49 @@ def test_step_dynamic_capture_fails_closed_when_required_text_is_missing(
         harness.inspect_step_reference(f"TC-IMAGE-006/{filename}", "body")
 
 
+def test_component_region_metadata_reaches_capture_without_changing_model_rules(tmp_path, monkeypatch):
+    from utils import vision_harness as module
+    from utils.component_capture import ComponentCaptureError
+    baseline = _png_bytes(width=640, height=360, size=1200)
+    filename = "step_010_L90.png"
+    steps = tmp_path / "TC-IMAGE-042" / "steps"
+    steps.mkdir(parents=True)
+    (steps / filename).write_bytes(baseline)
+    anchor = {"locator": "canvas", "ancestor_levels": 0, "count": 1}
+    config = {"strategy": "component_region", "target": anchor, "edges": {},
+              "ready": {"visible": [anchor], "hidden": []}, "stable_ms": 600, "sample_ms": 200}
+    metadata = {"schema_version": 1, "case_id": "TC-IMAGE-042", "capture_locator": "body",
+                "approved_for_visual_testing": True, "approval_source": "unit-test",
+                "allowed_dynamic_differences": [], "references": {filename: {
+                    "image_sha256": hashlib.sha256(baseline).hexdigest(), "image_width": 640,
+                    "image_height": 360, "crop_box": [10, 10, 620, 340], "current_capture": config}}}
+    (steps / "steps.meta.json").write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setenv("VISION_BASELINE_DIR", str(tmp_path))
+    observed = []
+    component = _png_bytes(width=300, height=200, size=1100)
+    def capture(page, cfg, timeout):
+        observed.append(cfg)
+        return component, {"strategy": "component_region", "stable_ms": 600}
+    monkeypatch.setattr(module, "capture_component_region", capture)
+    compare = _CompareAnalyzeRecorder(_reference_response())
+    harness = VisionHarness(_FakePage(baseline), case_id="TC-IMAGE-042", compare_analyze_fn=compare,
+                            crop_fn=lambda *args: (baseline, baseline),
+                            compose_fn=lambda reference, current: component if current == component else b'bad')
+    assert harness.assert_step_reference("TC-IMAGE-042/" + filename, "body") is True
+    assert observed == [config]
+    assert len(compare.calls) == 1
+    def unavailable(*args):
+        raise ComponentCaptureError('STEP_CAPTURE_NOT_READY: missing boundary')
+    monkeypatch.setattr(module, "capture_component_region", unavailable)
+    with pytest.raises(VisionHarnessError, match='STEP_CAPTURE_NOT_READY'):
+        harness.inspect_step_reference("TC-IMAGE-042/" + filename, "body")
+    assert len(compare.calls) == 1  # No model request or cached pass when capture fails.
+    metadata['references'][filename]['current_capture']['sample_ms'] = 0
+    (steps / "steps.meta.json").write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(VisionHarnessError, match='STEP_CAPTURE_CONFIG'):
+        harness.inspect_step_reference("TC-IMAGE-042/" + filename, "body")
+
+
 def test_step_reference_rejects_changed_hash_and_viewport(tmp_path, monkeypatch):
     baseline = _png_bytes(width=640, height=360, size=1200)
     steps_dir = tmp_path / "TC-IMAGE-006" / "steps"

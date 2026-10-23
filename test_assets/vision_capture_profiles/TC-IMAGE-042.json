@@ -1,0 +1,364 @@
+{
+  "profile_version": 1,
+  "case_id": "TC-IMAGE-042",
+  "status": "candidate",
+  "description": "DOM-anchored regions; retain approved reference images/crops. Validate before promotion.",
+  "references": {
+    "step_005_page_loaded.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "body",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "right": {
+          "locator": "canvas:visible",
+          "ancestor_levels": 0,
+          "count": 1,
+          "side": "right"
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_006_view_reset.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "text=视角回正",
+        "ancestor_levels": 2,
+        "count": 1
+      },
+      "edges": {},
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          },
+          {
+            "locator": ":text-is(\"0°\")",
+            "ancestor_levels": 0,
+            "count": 1
+          },
+          {
+            "locator": ":text-is(\"R45°\")",
+            "ancestor_levels": 0,
+            "count": 1
+          },
+          {
+            "locator": ":text-is(\"L45°\")",
+            "ancestor_levels": 0,
+            "count": 1
+          },
+          {
+            "locator": ":text-is(\"R90°\")",
+            "ancestor_levels": 0,
+            "count": 1
+          },
+          {
+            "locator": ":text-is(\"L90°\")",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_007_R45.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "canvas:visible",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "left": {
+          "locator": "text=视角回正",
+          "ancestor_levels": 3,
+          "count": 1
+        },
+        "bottom": {
+          "locator": ":text-is(\"冷光\"):visible",
+          "ancestor_levels": 3,
+          "count": 1
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_008_L45.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "canvas:visible",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "left": {
+          "locator": "text=视角回正",
+          "ancestor_levels": 3,
+          "count": 1
+        },
+        "bottom": {
+          "locator": ":text-is(\"冷光\"):visible",
+          "ancestor_levels": 3,
+          "count": 1
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_009_R90.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "canvas:visible",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "left": {
+          "locator": "text=视角回正",
+          "ancestor_levels": 3,
+          "count": 1
+        },
+        "bottom": {
+          "locator": ":text-is(\"冷光\"):visible",
+          "ancestor_levels": 3,
+          "count": 1
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_010_L90.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "canvas:visible",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "left": {
+          "locator": "text=视角回正",
+          "ancestor_levels": 3,
+          "count": 1
+        },
+        "bottom": {
+          "locator": ":text-is(\"冷光\"):visible",
+          "ancestor_levels": 3,
+          "count": 1
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_011_0.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "canvas:visible",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "left": {
+          "locator": "text=视角回正",
+          "ancestor_levels": 3,
+          "count": 1
+        },
+        "bottom": {
+          "locator": ":text-is(\"冷光\"):visible",
+          "ancestor_levels": 3,
+          "count": 1
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_012_GY.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "canvas:visible",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "left": {
+          "locator": "text=视角回正",
+          "ancestor_levels": 3,
+          "count": 1
+        },
+        "bottom": {
+          "locator": ":text-is(\"冷光\"):visible",
+          "ancestor_levels": 3,
+          "count": 1
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_013_FenPing.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "canvas:visible",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "left": {
+          "locator": "text=视角回正",
+          "ancestor_levels": 3,
+          "count": 1
+        },
+        "bottom": {
+          "locator": ":text-is(\"冷光\"):visible",
+          "ancestor_levels": 3,
+          "count": 2
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          },
+          {
+            "locator": "label.ant-radio-button-wrapper-checked:has-text(\"分屏对比\")",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    },
+    "step_014_JingXiang.png": {
+      "strategy": "component_region",
+      "target": {
+        "locator": "body",
+        "ancestor_levels": 0,
+        "count": 1
+      },
+      "edges": {
+        "right": {
+          "locator": "canvas:visible",
+          "ancestor_levels": 0,
+          "count": 1,
+          "side": "right"
+        }
+      },
+      "ready": {
+        "visible": [
+          {
+            "locator": "text=视角回正",
+            "ancestor_levels": 0,
+            "count": 1
+          },
+          {
+            "locator": "label.ant-radio-button-wrapper-checked:has-text(\"镜像对比\")",
+            "ancestor_levels": 0,
+            "count": 1
+          }
+        ],
+        "hidden": [
+          ":text-matches(\"正在努力下载资源|模型加载中|数据整理中\"):visible"
+        ]
+      },
+      "stable_ms": 600,
+      "sample_ms": 200
+    }
+  }
+}

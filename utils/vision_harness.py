@@ -28,6 +28,11 @@ from typing import Any, Callable
 import allure
 
 from utils.vision_client import VisionError, analyze_image
+from utils.component_capture import (
+    ComponentCaptureError,
+    capture_component_region,
+    validate_component_capture,
+)
 
 logger = logging.getLogger("vision_harness")
 
@@ -416,6 +421,19 @@ class VisionHarness:
 
     def _capture_step_current(self, config: dict[str, Any]) -> bytes:
         """按步骤元数据定位当前 DOM 组件，避免标准图绝对坐标错套到动态布局。"""
+        if config.get("strategy") == "component_region":
+            try:
+                image_bytes, evidence = capture_component_region(self.page, config, self.timeout_ms)
+            except ComponentCaptureError as exc:
+                raise VisionHarnessError(str(exc)) from exc
+            except Exception as exc:
+                raise VisionHarnessError("STEP_CAPTURE_ERROR: 组件截图失败") from exc
+            allure.attach(
+                json.dumps(evidence, ensure_ascii=False),
+                name="步骤组件截图几何与稳定性证据",
+                attachment_type=allure.attachment_type.JSON,
+            )
+            return self._validate_image_bytes(image_bytes, "步骤当前组件截图")
         locator = config["locator"]
         ancestor_levels = config["ancestor_levels"]
         required_texts = config["required_texts"]
@@ -1108,7 +1126,12 @@ class VisionHarness:
                     "步骤 current_crop_box 越界或过小: "
                     f"{current_crop_box}，图片={width}x{height}"
                 )
-        if current_capture is not None:
+        if isinstance(current_capture, dict) and current_capture.get("strategy") == "component_region":
+            try:
+                current_capture = validate_component_capture(current_capture)
+            except ComponentCaptureError as exc:
+                raise VisionHarnessError(str(exc)) from exc
+        elif current_capture is not None:
             required_capture_fields = {"locator", "ancestor_levels", "required_texts"}
             if not isinstance(current_capture, dict) or set(current_capture) != required_capture_fields:
                 actual = set(current_capture) if isinstance(current_capture, dict) else set()

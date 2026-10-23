@@ -37,6 +37,7 @@ from pages.personal_center_page import PersonalCenterPage
 from pages.recently_deleted_page import RecentlyDeletedPage
 from pages.cloud_storage_page import CloudStoragePage
 from utils.excel_handler import ExcelHandler
+from utils.browser_geometry import initial_case_geometry
 from utils.parallel_execution import (
     account_env_value,
     auth_state_path,
@@ -223,6 +224,9 @@ def browser_context_args(request, auth_state_file):
     """
     context_args = {"locale": "zh-CN"}
     test_case_data = _case_data_from_item(request.node)
+    # The application computes rem from window.screen once on first load.
+    # A later set_viewport step cannot repair that initial calculation.
+    context_args.update(initial_case_geometry(test_case_data))
     preconditions = str((test_case_data or {}).get("前置条件", ""))
     requires_blank_context = "打开登录" in preconditions or "未登录" in preconditions
     if auth_state_file.exists() and not requires_blank_context:
