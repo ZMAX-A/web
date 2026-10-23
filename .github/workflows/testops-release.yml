@@ -145,13 +145,22 @@ jobs:
         if: env.RELEASE_MODE == 'package'
         uses: docker/setup-buildx-action@v4.1.0
 
+      - name: Prepare pinned Runner font contract
+        if: env.RELEASE_MODE == 'package'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/prepare_runner_dockerfile.py \
+            .testops-platform/infra/docker/yanjia-web-pytest.Dockerfile \
+            .testops-platform/infra/docker/yanjia-web-font-validated.Dockerfile
+
       - name: Build and push immutable Runner image
         if: env.RELEASE_MODE == 'package'
         id: image
         uses: docker/build-push-action@v7.2.0
         with:
           context: .testops-platform
-          file: .testops-platform/infra/docker/yanjia-web-pytest.Dockerfile
+          file: .testops-platform/infra/docker/yanjia-web-font-validated.Dockerfile
           build-contexts: |
             yanjia_web=.
           build-args: |

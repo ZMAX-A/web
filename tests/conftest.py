@@ -38,6 +38,8 @@ from pages.recently_deleted_page import RecentlyDeletedPage
 from pages.cloud_storage_page import CloudStoragePage
 from utils.excel_handler import ExcelHandler
 from utils.browser_geometry import initial_case_geometry
+from utils.browser_font_health import check_browser_font_health
+from utils.case_validator import is_visual_assertion
 from utils.parallel_execution import (
     account_env_value,
     auth_state_path,
@@ -233,6 +235,18 @@ def browser_context_args(request, auth_state_file):
         logger.info("▸ 复用已保存的登录状态，跳过登录流程")
         context_args["storage_state"] = str(auth_state_file)
     return context_args
+
+
+@pytest.fixture(scope="session")
+def _visual_browser_font_health(browser):
+    return check_browser_font_health(browser)
+
+
+@pytest.fixture(autouse=True)
+def require_visual_browser_fonts(request):
+    case = _case_data_from_item(request.node)
+    if case and is_visual_assertion(case):
+        request.getfixturevalue("_visual_browser_font_health")
 
 
 # ==================== 公共登录 fixture（测试隔离）====================
